@@ -389,12 +389,15 @@ function logBucketLines(bucket, group) {
 function dnsLines(group) {
   const byQuery = groupedCounts(
     group.values,
-    (item) => `${item.query || "unknown"} -> ${(item.answers || []).slice(0, 3).join(", ") || "none"}`,
-    "queries",
+    (item) =>
+      `${item.direction || "dns"} ${item.queryType || "unknown"} ${item.query || "unknown"} -> ${
+        (item.answers || []).slice(0, 3).join(", ") || "none"
+      }`,
+    "messages",
   );
   return [
     `${formatOffset(group.offsetSeconds)}-${formatOffset(group.offsetSeconds + group.bucketSeconds)} DNS`,
-    `${formatCount(group.values.length)} queries`,
+    `${formatCount(group.values.length)} messages`,
     ...byQuery,
   ];
 }
@@ -405,7 +408,7 @@ function dnsBucketLines(bucket, group) {
   }
   return [
     `${formatOffset(bucket.startOffsetSeconds)}-${formatOffset(bucket.endOffsetSeconds)} DNS`,
-    `${formatCount(bucket.dnsQueryCount || 0)} queries`,
+    `${formatCount(bucket.dnsQueryCount || 0)} messages`,
   ];
 }
 

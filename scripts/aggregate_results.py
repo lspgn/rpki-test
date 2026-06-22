@@ -55,7 +55,31 @@ DNS_FIELDS = (
     "dns.a",
     "dns.aaaa",
     "dns.cname",
+    "dns.flags.response",
+    "dns.qry.type",
 )
+
+LEGACY_DNS_FIELDS = DNS_FIELDS[:9]
+
+DNS_QUERY_TYPES = {
+    "1": "A",
+    "2": "NS",
+    "5": "CNAME",
+    "6": "SOA",
+    "12": "PTR",
+    "15": "MX",
+    "16": "TXT",
+    "28": "AAAA",
+    "33": "SRV",
+    "43": "DS",
+    "46": "RRSIG",
+    "47": "NSEC",
+    "48": "DNSKEY",
+    "52": "TLSA",
+    "64": "SVCB",
+    "65": "HTTPS",
+    "257": "CAA",
+}
 
 
 def write_compact_json(path: Path, data: Any) -> None:
@@ -640,6 +664,26 @@ def load_log_events(entry_dir: Path, start_epoch: float | None) -> list[dict[str
     return events
 
 
+def first_field_value(value: Any) -> str:
+    return str(value or "").split(",", 1)[0].strip()
+
+
+def dns_direction(response_flag: Any, answers: list[str]) -> str:
+    flag = first_field_value(response_flag).lower()
+    if flag in {"1", "true"}:
+        return "response"
+    if flag in {"0", "false"}:
+        return "query"
+    return "response" if answers else "query"
+
+
+def dns_query_type(value: Any) -> str:
+    text = first_field_value(value)
+    if not text:
+        return ""
+    return DNS_QUERY_TYPES.get(text, text.upper())
+
+
 def read_dns_queries(path: Path, start_epoch: float | None) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -653,6 +697,9 @@ def read_dns_queries(path: Path, start_epoch: float | None) -> list[dict[str, An
     header = rows[0]
     if header == list(DNS_FIELDS):
         field_names = list(DNS_FIELDS)
+        data_rows = rows[1:]
+    elif header == list(LEGACY_DNS_FIELDS):
+        field_names = list(LEGACY_DNS_FIELDS)
         data_rows = rows[1:]
     else:
         field_names = list(DNS_FIELDS)
@@ -678,11 +725,14 @@ def read_dns_queries(path: Path, start_epoch: float | None) -> list[dict[str, An
             answers.extend(part.strip().rstrip(".") for part in str(item.get(key) or "").split(",") if part.strip())
         if not query and not answers:
             continue
+        answers = sorted(set(answers))
         queries.append(
             {
                 "offsetSeconds": round(offset, 3),
+                "direction": dns_direction(item.get("dns.flags.response"), answers),
+                "queryType": dns_query_type(item.get("dns.qry.type")),
                 "query": query,
-                "answers": sorted(set(answers)),
+                "answers": answers,
                 "source": str(item.get("ip.src") or ""),
                 "destination": str(item.get("ip.dst") or ""),
             }
