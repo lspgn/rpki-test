@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import shutil
+from collections import Counter, defaultdict
 from itertools import combinations
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,44 @@ from rpki_project import (
 
 
 def find_result_dirs(results_dir: Path) -> list[Path]:
-    return sorted({path.parent for path in results_dir.rglob("status.json")})
+    result_dirs = set()
+    skipped_pages_dirs = 0
+    for path in results_dir.rglob("status.json"):
+        rel_parts = path.relative_to(results_dir).parts
+        if any(left == "data" and right == "runs" for left, right in zip(rel_parts, rel_parts[1:])):
+            skipped_pages_dirs += 1
+            continue
+        result_dirs.add(path.parent)
+    if skipped_pages_dirs:
+        print(f"Skipped {skipped_pages_dirs} status files from downloaded Pages run trees.")
+    return sorted(result_dirs)
+
+
+def summarize_result_dirs(result_dirs: list[Path]) -> None:
+    print(f"Found {len(result_dirs)} validator result directories.")
+    ids: list[str] = []
+    sources: dict[str, list[str]] = defaultdict(list)
+    for result_dir in result_dirs:
+        try:
+            status = read_json(result_dir / "status.json")
+        except Exception as exc:  # noqa: BLE001 - print useful context before the real failure later.
+            print(f"  - {result_dir}: unable to read status.json: {exc}")
+            continue
+        entry_id = str(status.get("id", result_dir.name))
+        ids.append(entry_id)
+        sources[entry_id].append(result_dir.as_posix())
+        print(
+            "  - "
+            f"{entry_id}: validator={status.get('validator', 'unknown')} "
+            f"success={status.get('success', False)} source={result_dir}"
+        )
+    duplicates = {entry_id: count for entry_id, count in Counter(ids).items() if count > 1}
+    if duplicates:
+        print("Duplicate validator ids detected; later copies may overwrite earlier copied files:")
+        for entry_id, count in sorted(duplicates.items()):
+            print(f"  - {entry_id}: {count} copies")
+            for source in sources[entry_id]:
+                print(f"    {source}")
 
 
 def copy_result(result_dir: Path, target_dir: Path) -> dict[str, Any]:
@@ -179,17 +217,22 @@ def main() -> None:
 
     results_dir = Path(args.results)
     public_dir = Path(args.output)
+    print(f"Aggregating validator results from {results_dir}")
+    print(f"Writing site to {public_dir}")
     if public_dir.exists():
         shutil.rmtree(public_dir)
     public_dir.mkdir(parents=True)
 
     copytree_contents(args.site, public_dir)
+    print(f"Copied static site assets from {args.site}")
 
     run_id = args.run_id
     run_dir = public_dir / "data" / "runs" / run_id
     entries = []
+    result_dirs = find_result_dirs(results_dir)
+    summarize_result_dirs(result_dirs)
 
-    for result_dir in find_result_dirs(results_dir):
+    for result_dir in result_dirs:
         status = read_json(result_dir / "status.json")
         entry_dir = run_dir / status["id"]
         copied_status = copy_result(result_dir, entry_dir)
@@ -207,6 +250,25 @@ def main() -> None:
         cache_tree_path = None
         if (entry_dir / "cache-tree.json").exists():
             cache_tree_path = f"data/runs/{run_id}/{copied_status['id']}/cache-tree.json"
+        status_cache_tree = copied_status.get("cacheTree") or {}
+        cache_tree_summary = "cacheTree=missing"
+        if cache_tree_path:
+            if not status_cache_tree:
+                status_cache_tree = read_json(entry_dir / "cache-tree.json")
+            cache_tree_summary = (
+                f"cacheTree={status_cache_tree.get('files', '?')} files "
+                f"{status_cache_tree.get('size', '?')} bytes"
+            )
+        print(
+            "Copied "
+            f"{copied_status['id']}: "
+            f"success={copied_status.get('success', False)} "
+            f"routeOrigins={counts['routeOrigins']} "
+            f"routerKeys={counts['routerKeys']} "
+            f"aspas={counts['aspas']} "
+            f"raw={len(raw_paths)} "
+            f"{cache_tree_summary}"
+        )
         entries.append(
             {
                 "id": copied_status["id"],
@@ -236,6 +298,14 @@ def main() -> None:
     generated_at = utc_now()
     summary_entries = [{key: value for key, value in entry.items() if key != "normalized"} for entry in entries]
     reports = write_object_reports(run_dir, run_id, entries)
+    for payload, report in reports.items():
+        print(
+            "Report "
+            f"{payload}: totalObjects={report['totalObjects']} "
+            f"differingObjects={report['differingObjects']} "
+            f"eligibleValidators={len(report['eligibleValidators'])} "
+            f"path={report['path']}"
+        )
     summary = {
         "id": run_id,
         "generatedAt": generated_at,
@@ -246,6 +316,8 @@ def main() -> None:
     }
     write_json(run_dir / "summary.json", summary)
     write_json(public_dir / "data" / "latest.json", summary)
+    print(f"Wrote run summary: {run_dir / 'summary.json'}")
+    print(f"Wrote latest summary: {public_dir / 'data' / 'latest.json'}")
 
     current_run = {
         "id": run_id,
@@ -269,6 +341,8 @@ def main() -> None:
         "runs": runs,
     }
     write_json(manifest_path, manifest)
+    print(f"Wrote manifest: {manifest_path}")
+    print(f"Published {len(entries)} entries in run {run_id}; siteBytes={manifest['siteBytes']}")
 
     index = public_dir / "index.html"
     if not index.exists():
