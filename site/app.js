@@ -24,6 +24,7 @@ const fileCache = new Map();
 const fileChunkCache = new Map();
 const timelineCache = new Map();
 const timelineByValidator = new Map();
+const expandedFlowCharts = new Set();
 
 const formatter = new Intl.NumberFormat();
 const byteFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
@@ -97,6 +98,10 @@ function formatPercent(value) {
 
 function formatRate(value) {
   return typeof value === "number" ? `${formatBytes(value)}/s` : "unknown";
+}
+
+function formatCount(value) {
+  return typeof value === "number" ? formatter.format(value) : "unknown";
 }
 
 function formatOffset(seconds) {
@@ -242,6 +247,123 @@ function linePath(points) {
   return points.map((point, index) => `${index ? "L" : "M"}${point[0].toFixed(1)},${point[1].toFixed(1)}`).join(" ");
 }
 
+function areaPath(points, baseline) {
+  if (!points.length) {
+    return "";
+  }
+  const first = points[0];
+  const last = points[points.length - 1];
+  return `M${first[0].toFixed(1)},${baseline.toFixed(1)} ${linePath(points)} L${last[0].toFixed(1)},${baseline.toFixed(1)} Z`;
+}
+
+function seriesStats(values) {
+  const numbers = values.filter((value) => typeof value === "number" && !Number.isNaN(value));
+  if (!numbers.length) {
+    return null;
+  }
+  return {
+    min: Math.min(...numbers),
+    max: Math.max(...numbers),
+    avg: numbers.reduce((sum, value) => sum + value, 0) / numbers.length,
+  };
+}
+
+function statsLabel(stats, format) {
+  if (!stats) {
+    return "no samples";
+  }
+  return `min ${format(stats.min)} / avg ${format(stats.avg)} / max ${format(stats.max)}`;
+}
+
+function sortedFlows(timeline) {
+  return [...(timeline?.network?.flows || [])].sort((left, right) => {
+    return (right.totalBytes || 0) - (left.totalBytes || 0)
+      || (left.remoteAddress || "").localeCompare(right.remoteAddress || "")
+      || (left.remotePort || 0) - (right.remotePort || 0);
+  });
+}
+
+function groupedByBucket(items, bucketSeconds, offsetValue) {
+  const groups = new Map();
+  for (const item of items || []) {
+    const offset = Math.max(0, offsetValue(item) || 0);
+    const index = Math.floor(offset / (bucketSeconds || 10));
+    if (!groups.has(index)) {
+      groups.set(index, []);
+    }
+    groups.get(index).push(item);
+  }
+  return [...groups.entries()]
+    .map(([index, values]) => ({
+      index,
+      offsetSeconds: index * (bucketSeconds || 10),
+      values,
+    }))
+    .sort((left, right) => left.index - right.index);
+}
+
+function tooltip() {
+  return document.querySelector("#timeline-tooltip");
+}
+
+function showTimelineTooltip(event, lines) {
+  const node = tooltip();
+  if (!node || !lines.length) {
+    return;
+  }
+  node.replaceChildren(...lines.map((line) => {
+    const div = document.createElement("div");
+    div.textContent = line;
+    return div;
+  }));
+  node.classList.add("is-visible");
+  node.style.left = `${event.clientX + 14}px`;
+  node.style.top = `${event.clientY + 14}px`;
+}
+
+function hideTimelineTooltip() {
+  const node = tooltip();
+  if (node) {
+    node.classList.remove("is-visible");
+  }
+}
+
+function addTooltipHandlers(node, lines) {
+  node.addEventListener("mousemove", (event) => showTimelineTooltip(event, lines));
+  node.addEventListener("mouseleave", hideTimelineTooltip);
+}
+
+function eventLines(group) {
+  const stdout = group.values.filter((item) => item.stream === "stdout").length;
+  const stderr = group.values.filter((item) => item.stream === "stderr").length;
+  return [
+    `${formatOffset(group.offsetSeconds)} logs`,
+    `${formatCount(stdout)} stdout / ${formatCount(stderr)} stderr`,
+    ...group.values.slice(0, 8).map((item) => `${item.stream}: ${item.message || ""}`),
+    ...(group.values.length > 8 ? [`+${formatCount(group.values.length - 8)} more`] : []),
+  ];
+}
+
+function dnsLines(group) {
+  return [
+    `${formatOffset(group.offsetSeconds)} DNS`,
+    `${formatCount(group.values.length)} queries`,
+    ...group.values.slice(0, 8).map((item) => `${item.query || "unknown"} -> ${(item.answers || []).join(", ") || "none"}`),
+    ...(group.values.length > 8 ? [`+${formatCount(group.values.length - 8)} more`] : []),
+  ];
+}
+
+function bucketTooltipLines(entry, bucket, configs, lanes) {
+  return [
+    `${entry?.label || "Validator"} ${formatOffset(bucket.startOffsetSeconds)}-${formatOffset(bucket.endOffsetSeconds)}`,
+    ...lanes.map((key) => `${configs[key].label}: ${configs[key].format(configs[key].value(bucket))}`),
+    `Flow bytes: ${formatBytes((bucket.flowRxBytes || 0) + (bucket.flowTxBytes || 0))}`,
+    `Logs: ${formatCount((bucket.stdoutCount || 0) + (bucket.stderrCount || 0))}`,
+    `DNS: ${formatCount(bucket.dnsQueryCount || 0)}`,
+    `Flows: ${formatCount(bucket.flowCount || 0)}`,
+  ];
+}
+
 function timelineDuration(timeline) {
   const buckets = timeline?.buckets || [];
   const flows = timeline?.network?.flows || [];
@@ -264,8 +386,9 @@ function flowLabel(flow) {
 function renderTimelineChart(svg, timeline, entry) {
   svg.replaceChildren();
   const buckets = timeline?.buckets || [];
-  const flows = timeline?.network?.flows || [];
+  const flows = sortedFlows(timeline);
   const events = timeline?.events || [];
+  const dnsQueries = timeline?.network?.dnsQueries || [];
   if (!buckets.length && !flows.length && !events.length) {
     svg.setAttribute("viewBox", "0 0 980 120");
     svg.append(svgElement("text", { x: 24, y: 64, class: "timeline-empty" }));
@@ -281,8 +404,11 @@ function renderTimelineChart(svg, timeline, entry) {
   const left = 112;
   const right = 24;
   const top = 24;
+  const expanded = expandedFlowCharts.has(entry?.id);
+  const visibleFlows = expanded ? flows : flows.slice(0, 12);
   const flowTop = top + 12;
-  const flowHeight = flows.length ? Math.min(74, Math.max(30, flows.slice(0, 8).length * 9 + 16)) : 28;
+  const flowRowHeight = expanded ? 13 : 8;
+  const flowHeight = flows.length ? Math.min(expanded ? 260 : 86, Math.max(34, visibleFlows.length * flowRowHeight + 18)) : 28;
   const laneTop = flowTop + flowHeight + 22;
   const laneHeight = 66;
   const height = laneTop + laneHeight * lanes.length + 34;
@@ -300,28 +426,45 @@ function renderTimelineChart(svg, timeline, entry) {
   flowLabelNode.textContent = "Flows";
   svg.append(flowLabelNode);
   svg.append(svgElement("rect", { x: left, y: flowTop, width: plotWidth, height: flowHeight, class: "flow-lane" }));
-  flows.slice(0, 8).forEach((flow, index) => {
-    const y = flowTop + 10 + index * 9;
+  const verticalTicks = 6;
+  for (let index = 0; index <= verticalTicks; index += 1) {
+    const x = left + (plotWidth * index) / verticalTicks;
+    svg.append(svgElement("line", { x1: x, x2: x, y1: flowTop, y2: height - 24, class: "grid-line vertical" }));
+  }
+  const maxFlowBytes = Math.max(...flows.map((flow) => flow.totalBytes || 0), 1);
+  visibleFlows.forEach((flow, index) => {
+    const y = flowTop + 10 + index * flowRowHeight;
     const start = flow.firstSeenOffsetSeconds || 0;
     const end = Math.max(flow.lastSeenOffsetSeconds || start, start + 0.6);
     const x = xForOffset(start);
     const barWidth = Math.max(3, xForOffset(end) - x);
+    const heat = Math.max(0.18, Math.min(0.9, (flow.totalBytes || 0) / maxFlowBytes));
     const bar = svgElement("rect", {
       x,
       y,
       width: barWidth,
-      height: 6,
+      height: expanded ? 9 : 6,
       rx: 2,
       class: "flow-bar",
+      opacity: heat.toFixed(2),
     });
-    const hover = svgElement("title");
-    hover.textContent = `${flowLabel(flow)}\n${formatOffset(start)}-${formatOffset(end)}\nRX/TX ${formatBytes(flow.totalRxBytes)} / ${formatBytes(flow.totalTxBytes)}`;
-    bar.append(hover);
+    addTooltipHandlers(bar, [
+      flowLabel(flow),
+      `${formatOffset(start)}-${formatOffset(end)}`,
+      `Total: ${formatBytes(flow.totalBytes || 0)}`,
+      `RX/TX: ${formatBytes(flow.totalRxBytes)} / ${formatBytes(flow.totalTxBytes)}`,
+      `Packets: ${formatCount(flow.packetCount || 0)}`,
+    ]);
     svg.append(bar);
+    if (expanded) {
+      const label = svgElement("text", { x: Math.min(x + barWidth + 5, width - right - 160), y: y + 8, class: "flow-label" });
+      label.textContent = flowLabel(flow).slice(0, 42);
+      svg.append(label);
+    }
   });
-  if (flows.length > 8) {
+  if (!expanded && flows.length > visibleFlows.length) {
     const more = svgElement("text", { x: left, y: flowTop + flowHeight - 4, class: "lane-max" });
-    more.textContent = `+${formatter.format(flows.length - 8)} more flows`;
+    more.textContent = `+${formatter.format(flows.length - visibleFlows.length)} more flows`;
     svg.append(more);
   }
 
@@ -330,15 +473,23 @@ function renderTimelineChart(svg, timeline, entry) {
     const yTop = laneTop + laneIndex * laneHeight;
     const yBottom = yTop + laneHeight - 22;
     const values = buckets.map((bucket) => config.value(bucket)).filter((value) => typeof value === "number" && !Number.isNaN(value));
-    const maxValue = Math.max(...values, 0);
+    const stats = seriesStats(values);
+    const maxValue = Math.max(stats?.max || 0, 0);
     const lane = svgElement("g", { class: "timeline-lane" });
+    for (let gridIndex = 0; gridIndex <= 2; gridIndex += 1) {
+      const y = yBottom - (gridIndex / 2) * (laneHeight - 30);
+      lane.append(svgElement("line", { x1: left, x2: width - right, y1: y, y2: y, class: "grid-line horizontal" }));
+    }
     lane.append(svgElement("line", { x1: left, x2: width - right, y1: yBottom, y2: yBottom, class: "axis" }));
     const title = svgElement("text", { x: 18, y: yTop + 18, class: "lane-label" });
     title.textContent = config.label;
     lane.append(title);
     const max = svgElement("text", { x: 18, y: yTop + 38, class: "lane-max" });
-    max.textContent = maxValue ? config.format(maxValue) : "no samples";
+    max.textContent = statsLabel(stats, config.format);
     lane.append(max);
+    const zero = svgElement("text", { x: left - 18, y: yBottom + 4, class: "axis-label" });
+    zero.textContent = "0";
+    lane.append(zero);
     const points = buckets
       .map((bucket) => {
         const value = config.value(bucket);
@@ -350,21 +501,51 @@ function renderTimelineChart(svg, timeline, entry) {
         return [x, y];
       })
       .filter(Boolean);
+    const displayPoints = points.length ? [[left, yBottom], ...points] : [];
+    if (displayPoints.length > 1) {
+      lane.append(svgElement("path", { d: areaPath(displayPoints, yBottom), class: "timeline-area", fill: config.color }));
+    }
     if (points.length === 1) {
       lane.append(svgElement("circle", { cx: points[0][0], cy: points[0][1], r: 3, fill: config.color }));
-    } else if (points.length > 1) {
-      lane.append(svgElement("path", { d: linePath(points), fill: "none", stroke: config.color, "stroke-width": 2.5 }));
+      lane.append(svgElement("path", { d: linePath(displayPoints), fill: "none", stroke: config.color, "stroke-width": 2.5 }));
+    } else if (displayPoints.length > 1) {
+      lane.append(svgElement("path", { d: linePath(displayPoints), fill: "none", stroke: config.color, "stroke-width": 2.5 }));
     }
     svg.append(lane);
   });
 
+  buckets.forEach((bucket) => {
+    const x = xForOffset(bucket.startOffsetSeconds || 0);
+    const bucketWidth = Math.max(2, xForOffset(bucket.endOffsetSeconds || ((bucket.startOffsetSeconds || 0) + bucketSeconds)) - x);
+    const hover = svgElement("rect", {
+      x,
+      y: laneTop,
+      width: bucketWidth,
+      height: laneHeight * lanes.length,
+      class: "bucket-hover",
+    });
+    addTooltipHandlers(hover, bucketTooltipLines(entry, bucket, configs, lanes));
+    svg.append(hover);
+  });
+
   const markerGroup = svgElement("g", { class: "timeline-markers" });
-  for (const event of events.slice(0, 300)) {
-    const x = xForOffset(event.offsetSeconds || 0);
-    const dot = svgElement("circle", { cx: x, cy: flowTop - 4, r: 4, class: `event-dot ${event.stream}` });
-    const hover = svgElement("title");
-    hover.textContent = `${formatOffset(event.offsetSeconds)} ${event.stream}\n${event.message || ""}`;
-    dot.append(hover);
+  for (const group of groupedByBucket(events, bucketSeconds, (event) => event.offsetSeconds).slice(0, 160)) {
+    const x = xForOffset(group.offsetSeconds + bucketSeconds / 2);
+    const dot = svgElement("circle", { cx: x, cy: flowTop - 5, r: Math.min(8, 3 + Math.sqrt(group.values.length)), class: "event-dot logs" });
+    addTooltipHandlers(dot, eventLines(group));
+    markerGroup.append(dot);
+  }
+  for (const group of groupedByBucket(dnsQueries, bucketSeconds, (query) => query.offsetSeconds).slice(0, 160)) {
+    const x = xForOffset(group.offsetSeconds + bucketSeconds / 2);
+    const dot = svgElement("rect", {
+      x: x - Math.min(8, 3 + Math.sqrt(group.values.length)),
+      y: flowTop - 18,
+      width: Math.min(16, 6 + Math.sqrt(group.values.length) * 2),
+      height: Math.min(16, 6 + Math.sqrt(group.values.length) * 2),
+      rx: 2,
+      class: "event-dot dns",
+    });
+    addTooltipHandlers(dot, dnsLines(group));
     markerGroup.append(dot);
   }
   svg.append(markerGroup);
@@ -384,12 +565,28 @@ function renderTimelineCard(entry, timeline) {
   const title = document.createElement("h3");
   title.textContent = entry.label;
   const summary = document.createElement("span");
+  const actions = document.createElement("div");
+  actions.className = "timeline-card-actions";
   const events = timeline?.events?.length || 0;
   const flows = timeline?.network?.flows?.length || 0;
   const dns = timeline?.network?.dnsQueries?.length || 0;
   summary.className = "muted";
   summary.textContent = `${formatter.format(timeline?.buckets?.length || 0)} buckets / ${formatter.format(events)} events / ${formatter.format(dns)} DNS / ${formatter.format(flows)} flows`;
-  head.append(title, summary);
+  const flowToggle = document.createElement("button");
+  flowToggle.type = "button";
+  flowToggle.className = "timeline-flow-toggle";
+  flowToggle.textContent = expandedFlowCharts.has(entry.id) ? "Collapse flows" : "Expand flows";
+  flowToggle.disabled = flows === 0;
+  flowToggle.addEventListener("click", () => {
+    if (expandedFlowCharts.has(entry.id)) {
+      expandedFlowCharts.delete(entry.id);
+    } else {
+      expandedFlowCharts.add(entry.id);
+    }
+    renderAllTimelines();
+  });
+  actions.append(summary, flowToggle);
+  head.append(title, actions);
   const wrap = document.createElement("div");
   wrap.className = "timeline-chart-wrap";
   const svg = svgElement("svg", { class: "timeline-chart", role: "img", "aria-label": `${entry.label} timeline` });
