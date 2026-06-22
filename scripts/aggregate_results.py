@@ -34,6 +34,12 @@ def copy_result(result_dir: Path, target_dir: Path) -> dict[str, Any]:
         source = result_dir / name
         if source.exists():
             shutil.copy2(source, target_dir / name)
+    ebpf_out = target_dir / "ebpf"
+    for name in ("dns-queries.tsv", "tcp-bps.log", "tcp-life.log"):
+        source = result_dir / "ebpf" / name
+        if source.exists():
+            ebpf_out.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, ebpf_out / name)
     for source in sorted(result_dir.glob("*.log")):
         if source.name not in {"stdout.log", "stderr.log"}:
             shutil.copy2(source, target_dir / source.name)
@@ -165,6 +171,11 @@ def main() -> None:
             for name in ("resource-usage.json", "docker-stats.jsonl")
             if (entry_dir / name).exists()
         ]
+        observability_paths.extend(
+            f"data/runs/{run_id}/{copied_status['id']}/ebpf/{name}"
+            for name in ("dns-queries.tsv", "tcp-bps.log", "tcp-life.log")
+            if (entry_dir / "ebpf" / name).exists()
+        )
         entries.append(
             {
                 "id": copied_status["id"],

@@ -115,11 +115,13 @@ jobs:
             out/${{ matrix.id }}/stderr.log
             out/${{ matrix.id }}/resource-usage.json
             out/${{ matrix.id }}/docker-stats.jsonl
+            out/${{ matrix.id }}/ebpf/dns-queries.tsv
+            out/${{ matrix.id }}/ebpf/tcp-bps.log
+            out/${{ matrix.id }}/ebpf/tcp-life.log
             out/${{ matrix.id }}/*.log
             out/${{ matrix.id }}/normalized.json
             out/${{ matrix.id }}/raw/*.json
             out/${{ matrix.id }}/raw/*.json.gz
-            out/${{ matrix.id }}/archives/*.tar.gz
           if-no-files-found: error
           retention-days: 7
 

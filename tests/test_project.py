@@ -138,6 +138,11 @@ class AggregateTests(unittest.TestCase):
                 write_json(out / "status.json", status)
                 write_json(out / "resource-usage.json", status["resourceUsage"])
                 (out / "docker-stats.jsonl").write_text("", encoding="utf-8")
+                ebpf_dir = out / "ebpf"
+                ebpf_dir.mkdir()
+                (ebpf_dir / "dns-queries.tsv").write_text("time\tsrc\tdst\tquery\n", encoding="utf-8")
+                (ebpf_dir / "tcp-bps.log").write_text("127.0.0.1:443 1024\n", encoding="utf-8")
+                (ebpf_dir / "dns.pcap").write_bytes(b"not published")
                 write_json(out / "normalized.json", normalize_payloads([raw], {**status, "image": "fixture"}))
                 (out / "stdout.log").write_text("", encoding="utf-8")
                 (out / "stderr.log").write_text("", encoding="utf-8")
@@ -166,7 +171,11 @@ class AggregateTests(unittest.TestCase):
             self.assertEqual(manifest["latestRun"], "fixture-run")
             self.assertEqual(len(latest["entries"]), 2)
             self.assertEqual(latest["entries"][0]["resourceUsage"]["peakProcessorCores"], 1.25)
-            self.assertIn("resource-usage.json", latest["entries"][0]["paths"]["observability"][0])
+            observability = latest["entries"][0]["paths"]["observability"]
+            self.assertTrue(any(path.endswith("resource-usage.json") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/dns-queries.tsv") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/tcp-bps.log") for path in observability))
+            self.assertFalse(any(path.endswith("dns.pcap") for path in observability))
             self.assertTrue((public / "index.html").exists())
 
 

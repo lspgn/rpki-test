@@ -5,6 +5,8 @@ entry and publishes these artifacts:
 
 - `resource-usage.json`: calculated CPU, memory, PID, and network summary
 - `docker-stats.jsonl`: raw `docker stats --no-stream --format '{{json .}}'` samples
+- `ebpf/dns-queries.tsv`: derived DNS query report, when collected
+- `ebpf/tcp-bps.log` and `ebpf/tcp-life.log`: derived byte/connection reports, when collected
 
 The dashboard surfaces peak processor cores and peak RAM for each validator.
 Use `resource-usage.json` as the sizing input for routine capacity planning:
@@ -49,6 +51,9 @@ tshark -r "out/routinator-0_15_2/ebpf/dns.pcap" -Y dns -T fields \
   -e frame.time_epoch -e ip.src -e ip.dst -e udp.srcport -e udp.dstport -e dns.qry.name \
   > "out/routinator-0_15_2/ebpf/dns-queries.tsv"
 ```
+
+Keep `dns.pcap` local for investigation only. The workflow uploads
+`dns-queries.tsv`, not the full packet capture.
 
 Capture per-IP/port TCP throughput and lifetimes:
 
