@@ -34,6 +34,9 @@ def copy_result(result_dir: Path, target_dir: Path) -> dict[str, Any]:
         source = result_dir / name
         if source.exists():
             shutil.copy2(source, target_dir / name)
+    for source in sorted(result_dir.glob("*.log")):
+        if source.name not in {"stdout.log", "stderr.log"}:
+            shutil.copy2(source, target_dir / source.name)
     raw_out = target_dir / "raw"
     for source in sorted((result_dir / "raw").glob("*.json.gz")):
         raw_out.mkdir(parents=True, exist_ok=True)
@@ -152,6 +155,11 @@ def main() -> None:
             f"data/runs/{run_id}/{copied_status['id']}/raw/{path.name}"
             for path in sorted((entry_dir / "raw").glob("*.json.gz"))
         ]
+        extra_logs = [
+            f"data/runs/{run_id}/{copied_status['id']}/{path.name}"
+            for path in sorted(entry_dir.glob("*.log"))
+            if path.name not in {"stdout.log", "stderr.log"}
+        ]
         entries.append(
             {
                 "id": copied_status["id"],
@@ -170,6 +178,7 @@ def main() -> None:
                     "stdout": f"data/runs/{run_id}/{copied_status['id']}/stdout.log",
                     "stderr": f"data/runs/{run_id}/{copied_status['id']}/stderr.log",
                     "raw": raw_paths,
+                    "logs": extra_logs,
                 },
                 "normalized": normalized,
             }
