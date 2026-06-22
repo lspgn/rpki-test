@@ -317,6 +317,10 @@ a:hover {
   margin-bottom: 10px;
 }
 
+.timeline-card.is-collapsed .timeline-card-head {
+  margin-bottom: 0;
+}
+
 .timeline-card h3 {
   margin: 0;
   font-size: 15px;

@@ -25,6 +25,7 @@ const fileChunkCache = new Map();
 const timelineCache = new Map();
 const timelineByValidator = new Map();
 const expandedFlowCharts = new Set();
+const collapsedTimelineProfiles = new Set();
 const COLLAPSED_FLOW_BINS = 96;
 const EXPANDED_FLOW_LIMIT = 80;
 
@@ -491,7 +492,7 @@ function heatBinLines(bin) {
   ];
 }
 
-function renderTimelineChart(svg, timeline, entry) {
+function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
   svg.replaceChildren();
   const buckets = timeline?.buckets || [];
   const flows = sortedFlows(timeline);
@@ -512,7 +513,7 @@ function renderTimelineChart(svg, timeline, entry) {
   const configs = timelineSeriesConfig(bucketSeconds);
   const enabled = selectedTimelineSeries().filter((key) => configs[key]);
   const lanes = enabled.length ? enabled : ["cpu"];
-  const duration = timelineDuration(timeline);
+  const duration = Math.max(scaleDuration || 0, timelineDuration(timeline));
   const width = Math.min(2200, Math.max(980, Math.round(duration * 1.35)));
   const left = 112;
   const right = 24;
@@ -768,9 +769,13 @@ function renderTimelineChart(svg, timeline, entry) {
   svg.append(svgElement("line", { x1: left, x2: left, y1: flowTop, y2: height - 24, class: "axis" }));
 }
 
-function renderTimelineCard(entry, timeline) {
+function renderTimelineCard(entry, timeline, scaleDuration) {
   const article = document.createElement("article");
   article.className = "timeline-card";
+  const collapsed = collapsedTimelineProfiles.has(entry.id);
+  if (collapsed) {
+    article.classList.add("is-collapsed");
+  }
   const head = document.createElement("div");
   head.className = "timeline-card-head";
   const title = document.createElement("h3");
@@ -787,7 +792,7 @@ function renderTimelineCard(entry, timeline) {
   flowToggle.type = "button";
   flowToggle.className = "timeline-flow-toggle";
   flowToggle.textContent = expandedFlowCharts.has(entry.id) ? "Collapse flows" : "Expand flows";
-  flowToggle.disabled = flows === 0;
+  flowToggle.disabled = flows === 0 || collapsed;
   flowToggle.addEventListener("click", () => {
     if (expandedFlowCharts.has(entry.id)) {
       expandedFlowCharts.delete(entry.id);
@@ -796,14 +801,30 @@ function renderTimelineCard(entry, timeline) {
     }
     renderAllTimelines();
   });
-  actions.append(summary, flowToggle);
+  const profileToggle = document.createElement("button");
+  profileToggle.type = "button";
+  profileToggle.className = "timeline-flow-toggle";
+  profileToggle.textContent = collapsed ? "Show profile" : "Hide profile";
+  profileToggle.addEventListener("click", () => {
+    if (collapsedTimelineProfiles.has(entry.id)) {
+      collapsedTimelineProfiles.delete(entry.id);
+    } else {
+      collapsedTimelineProfiles.add(entry.id);
+    }
+    renderAllTimelines();
+  });
+  actions.append(summary, flowToggle, profileToggle);
   head.append(title, actions);
+  article.append(head);
+  if (collapsed) {
+    return article;
+  }
   const wrap = document.createElement("div");
   wrap.className = "timeline-chart-wrap";
   const svg = svgElement("svg", { class: "timeline-chart", role: "img", "aria-label": `${entry.label} timeline` });
   wrap.append(svg);
-  article.append(head, wrap);
-  renderTimelineChart(svg, timeline, entry);
+  article.append(wrap);
+  renderTimelineChart(svg, timeline, entry, scaleDuration);
   return article;
 }
 
@@ -815,10 +836,18 @@ function renderAllTimelines() {
     return;
   }
   const fragment = document.createDocumentFragment();
+  const loadedEntries = currentSummary.entries
+    .map((entry) => ({ entry, timeline: timelineByValidator.get(entry.id) }))
+    .filter((item) => item.timeline);
+  const openDurations = loadedEntries
+    .filter((item) => !collapsedTimelineProfiles.has(item.entry.id))
+    .map((item) => timelineDuration(item.timeline));
+  const fallbackDurations = loadedEntries.map((item) => timelineDuration(item.timeline));
+  const scaleDuration = Math.max(...(openDurations.length ? openDurations : fallbackDurations), 0);
   for (const entry of currentSummary.entries) {
     const timeline = timelineByValidator.get(entry.id);
     if (timeline) {
-      fragment.append(renderTimelineCard(entry, timeline));
+      fragment.append(renderTimelineCard(entry, timeline, scaleDuration));
     } else {
       const pending = document.createElement("article");
       pending.className = "timeline-card";
@@ -828,12 +857,14 @@ function renderAllTimelines() {
   }
   container.replaceChildren(fragment);
   const loaded = currentSummary.entries.filter((entry) => timelineByValidator.has(entry.id)).length;
+  const open = currentSummary.entries.filter((entry) => timelineByValidator.has(entry.id) && !collapsedTimelineProfiles.has(entry.id)).length;
   document.querySelector("#timeline-summary").textContent =
-    `${formatter.format(loaded)} / ${formatter.format(currentSummary.entries.length)} charts loaded`;
+    `${formatter.format(loaded)} / ${formatter.format(currentSummary.entries.length)} charts loaded, ${formatter.format(open)} open`;
 }
 
 async function loadAllTimelines(summary) {
   timelineByValidator.clear();
+  collapsedTimelineProfiles.clear();
   renderAllTimelines();
   await Promise.all(
     summary.entries.map(async (entry) => {
