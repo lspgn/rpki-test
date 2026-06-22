@@ -94,6 +94,14 @@ def read_raw_json(raw_dir: Path) -> list[Any]:
     return values
 
 
+def prepare_output_dir(output_dir: Path) -> None:
+    # Validator images may run as non-root users, so the bind-mounted /out tree
+    # needs to be writable by more than the GitHub runner uid.
+    for path in [output_dir, *output_dir.rglob("*")]:
+        if path.is_dir():
+            path.chmod(0o777)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="validators.yml")
@@ -106,6 +114,7 @@ def main() -> None:
     raw_dir = output_dir / "raw"
     output_dir.mkdir(parents=True, exist_ok=True)
     raw_dir.mkdir(parents=True, exist_ok=True)
+    prepare_output_dir(output_dir)
 
     command = docker_command(entry, output_dir)
     started_at = utc_now()
