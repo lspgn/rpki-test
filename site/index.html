@@ -47,6 +47,75 @@
             <tbody id="validators"></tbody>
           </table>
         </div>
+        <section class="timeline" aria-label="Validator timeline">
+          <div class="section-head">
+            <h2 id="timeline-title">Timeline</h2>
+            <span class="muted" id="timeline-summary"></span>
+          </div>
+          <div class="timeline-controls" aria-label="Timeline series">
+            <label><input type="checkbox" data-timeline-series="cpu" checked> CPU</label>
+            <label><input type="checkbox" data-timeline-series="memory" checked> Memory</label>
+            <label><input type="checkbox" data-timeline-series="network" checked> Network</label>
+            <label><input type="checkbox" data-timeline-series="disk" checked> Disk</label>
+            <label><input type="checkbox" data-timeline-series="pids" checked> Processes</label>
+          </div>
+          <div class="timeline-chart-wrap">
+            <svg id="timeline-chart" class="timeline-chart" role="img" aria-labelledby="timeline-title"></svg>
+          </div>
+          <div class="timeline-detail">
+            <section>
+              <div class="section-head compact">
+                <h2>Events</h2>
+                <span class="muted" id="timeline-event-count"></span>
+              </div>
+              <div class="table-wrap compact-table">
+                <table class="events-table">
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Stream</th>
+                      <th>Message</th>
+                    </tr>
+                  </thead>
+                  <tbody id="timeline-events"></tbody>
+                </table>
+              </div>
+            </section>
+            <section>
+              <div class="section-head compact">
+                <h2>Network</h2>
+                <span class="muted" id="timeline-network-count"></span>
+              </div>
+              <div class="timeline-network">
+                <div class="table-wrap compact-table">
+                  <table class="dns-table">
+                    <thead>
+                      <tr>
+                        <th>Bucket</th>
+                        <th>Query</th>
+                        <th>Answers</th>
+                      </tr>
+                    </thead>
+                    <tbody id="timeline-dns"></tbody>
+                  </table>
+                </div>
+                <div class="table-wrap compact-table">
+                  <table class="flows-table">
+                    <thead>
+                      <tr>
+                        <th>Bucket</th>
+                        <th>Remote</th>
+                        <th>DNS</th>
+                        <th>RX / TX</th>
+                      </tr>
+                    </thead>
+                    <tbody id="timeline-flows"></tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
       </section>
 
       <section class="view" id="resources-view">

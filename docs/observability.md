@@ -5,6 +5,9 @@ entry and publishes these artifacts:
 
 - `resource-usage.json`: calculated CPU, memory, PID, and network summary
 - `docker-stats.jsonl`: raw `docker stats --no-stream --format '{{json .}}'` samples
+- `log-events.json`: timestamped stdout/stderr lines for timeline annotations
+- `timeline.json`: dashboard-ready 10 second resource buckets, log annotations,
+  DNS queries, and network flows
 - `ebpf/tooling.json` and `ebpf/tooling.log`: non-invasive preflight showing whether capture tools were available
 - `ebpf/capture-status.json` and `ebpf/capture.log`: capture process status and startup/cleanup log
 - `ebpf/dns-queries.tsv`: derived DNS query report, when collected
@@ -13,7 +16,10 @@ entry and publishes these artifacts:
 - `ebpf/tcp-bps.log` and `ebpf/tcp-life.log`: best-effort BPF byte/connection reports, when collected
 - `ebpf/syscalls.log` and `ebpf/memory-allocations.log`: syscall and allocation traces, when collected
 
-The dashboard surfaces peak processor cores and peak RAM for each validator.
+The dashboard surfaces peak processor cores and peak RAM for each validator,
+plus a per-validator timeline below the validator table. The timeline uses
+`timeline.json` as its single browser-facing source for resource graphs, log
+annotations, DNS queries, and network flows.
 Use `resource-usage.json` as the sizing input for routine capacity planning:
 
 - `peakMemoryBytes`: minimum RAM headroom for the observed run

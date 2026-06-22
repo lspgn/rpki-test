@@ -231,6 +231,14 @@ tr:last-child td {
   border-bottom: 0;
 }
 
+tbody tr[tabindex] {
+  cursor: pointer;
+}
+
+tbody tr.is-selected td {
+  background: #edf5f1;
+}
+
 .validators-table {
   min-width: 1220px;
 }
@@ -293,6 +301,128 @@ a:hover {
   gap: 8px;
 }
 
+.timeline {
+  margin-top: 22px;
+}
+
+.timeline-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0 0 12px;
+}
+
+.timeline-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.timeline-controls input {
+  min-height: auto;
+}
+
+.timeline-chart-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.timeline-chart {
+  display: block;
+  width: 100%;
+  min-width: 760px;
+  min-height: 120px;
+}
+
+.timeline-chart .axis {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.timeline-chart .lane-label {
+  fill: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.timeline-chart .lane-max,
+.timeline-chart .axis-label,
+.timeline-empty {
+  fill: var(--muted);
+  font-size: 12px;
+}
+
+.event-marker {
+  stroke-width: 1;
+  opacity: 0.32;
+}
+
+.event-marker.stdout {
+  stroke: var(--accent);
+}
+
+.event-marker.stderr {
+  stroke: var(--bad);
+}
+
+.timeline-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+  margin-top: 4px;
+}
+
+.section-head.compact {
+  margin-top: 18px;
+}
+
+.section-head.compact h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.compact-table {
+  max-height: 280px;
+  overflow: auto;
+}
+
+.compact-table table {
+  min-width: 760px;
+}
+
+.events-table {
+  min-width: 780px;
+}
+
+.dns-table,
+.flows-table {
+  min-width: 640px;
+}
+
+.timeline-network {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 12px;
+}
+
+.stream {
+  font-weight: 700;
+}
+
+.stream.stdout {
+  color: var(--accent);
+}
+
+.stream.stderr {
+  color: var(--bad);
+}
+
 .diff-list {
   display: grid;
   gap: 10px;
@@ -325,6 +455,10 @@ a:hover {
   }
 
   .controls {
+    grid-template-columns: 1fr;
+  }
+
+  .timeline-network {
     grid-template-columns: 1fr;
   }
 }
