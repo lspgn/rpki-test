@@ -390,6 +390,43 @@ a:hover {
   min-height: 120px;
 }
 
+.timeline-log-panel {
+  display: grid;
+  gap: 2px;
+  max-height: 320px;
+  overflow: auto;
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #20201d;
+  padding: 8px;
+  color: #f3f0e8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.timeline-log-row {
+  display: grid;
+  grid-template-columns: 46px 48px minmax(0, 1fr);
+  gap: 8px;
+  min-width: 720px;
+  white-space: pre-wrap;
+}
+
+.timeline-log-row.stderr {
+  color: #ffd0c9;
+}
+
+.timeline-log-time,
+.timeline-log-stream {
+  color: #aaa59a;
+}
+
+.timeline-log-message {
+  overflow-wrap: anywhere;
+}
+
 .timeline-chart .axis {
   stroke: var(--line);
   stroke-width: 1;
@@ -522,6 +559,10 @@ a:hover {
 .timeline-tooltip.is-visible {
   display: grid;
   gap: 3px;
+}
+
+.timeline-tooltip.is-log-tooltip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
 .diff-list {
