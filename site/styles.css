@@ -390,6 +390,88 @@ a:hover {
   min-height: 120px;
 }
 
+.timeline-log-bucket-panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #20201d;
+  padding: 8px;
+  color: #f3f0e8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.timeline-log-bucket-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-family: inherit;
+}
+
+.timeline-log-bucket-head .muted {
+  color: #aaa59a;
+}
+
+.timeline-log-bucket-head .timeline-flow-toggle {
+  margin-left: auto;
+  min-height: 26px;
+  background: #2b2b27;
+  color: #f3f0e8;
+}
+
+.timeline-log-bucket-body {
+  display: grid;
+  gap: 2px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.timeline-log-bucket-row {
+  display: grid;
+  grid-template-columns: 46px 48px minmax(0, 1fr);
+  gap: 8px;
+  min-width: 720px;
+  white-space: pre-wrap;
+}
+
+.timeline-log-bucket-row.stderr {
+  color: #ffd0c9;
+}
+
+.timeline-log-bucket-time,
+.timeline-log-bucket-stream,
+.timeline-log-bucket-empty {
+  color: #aaa59a;
+}
+
+.timeline-log-bucket-message {
+  overflow-wrap: anywhere;
+}
+
+.timeline-dns-bucket-panel {
+  background: #20222d;
+}
+
+.timeline-dns-bucket-row {
+  display: grid;
+  grid-template-columns: 46px minmax(180px, 0.7fr) minmax(0, 1fr);
+  gap: 8px;
+  min-width: 720px;
+}
+
+.timeline-dns-bucket-query {
+  color: #e6e1ff;
+  overflow-wrap: anywhere;
+}
+
+.timeline-dns-bucket-answers {
+  overflow-wrap: anywhere;
+}
+
 .timeline-chart .axis {
   stroke: var(--line);
   stroke-width: 1;
@@ -481,6 +563,14 @@ a:hover {
   fill: transparent;
   pointer-events: all;
   cursor: pointer;
+}
+
+.log-bucket-hitbox:hover,
+.log-bucket-hitbox.is-hovered,
+.chart-bucket-hitbox:hover,
+.chart-bucket-hitbox.is-hovered {
+  fill: var(--accent);
+  opacity: 0.08;
 }
 
 .dns-lane {
