@@ -493,6 +493,10 @@ a:hover {
   font-weight: 700;
 }
 
+.timeline-chart .lane-label.is-clickable {
+  cursor: pointer;
+}
+
 .timeline-card-title {
   fill: var(--ink);
   font-size: 13px;

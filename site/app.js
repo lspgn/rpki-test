@@ -34,6 +34,8 @@ let timelineScrollRatio = 0;
 let syncingTimelineScroll = false;
 let pinnedTimelineTooltip = null;
 let draggingTimelineTooltip = null;
+let activeBucketSelection = null;
+let pendingBucketPanelFocus = null;
 
 const formatter = new Intl.NumberFormat();
 const byteFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
@@ -529,6 +531,86 @@ function logBucketLines(bucket, group, expanded = false) {
   ];
 }
 
+function bucketCountForKind(bucket, kind) {
+  if (kind === "logs") {
+    return (bucket.stdoutCount || 0) + (bucket.stderrCount || 0);
+  }
+  if (kind === "dns") {
+    return bucket.dnsQueryCount || 0;
+  }
+  return 0;
+}
+
+function selectedBucketMap(kind) {
+  return kind === "dns" ? selectedDnsBuckets : selectedLogBuckets;
+}
+
+function selectableBuckets(timeline, kind) {
+  return [...(timeline?.buckets || [])]
+    .sort((left, right) => (left.startOffsetSeconds || 0) - (right.startOffsetSeconds || 0));
+}
+
+function syncSiblingBucketSelection(kind, entryId, startOffsetSeconds) {
+  const otherKind = kind === "logs" ? "dns" : "logs";
+  const otherMap = selectedBucketMap(otherKind);
+  if (otherMap.has(entryId)) {
+    otherMap.set(entryId, startOffsetSeconds || 0);
+  }
+}
+
+function selectTimelineBucket(kind, entryId, startOffsetSeconds) {
+  selectedBucketMap(kind).set(entryId, startOffsetSeconds || 0);
+  syncSiblingBucketSelection(kind, entryId, startOffsetSeconds);
+  activeBucketSelection = { kind, entryId };
+  pendingBucketPanelFocus = { kind, entryId };
+  clearPinnedTimelineTooltip();
+  hideTimelineTooltip(true);
+  renderAllTimelines();
+}
+
+function closeTimelineBucketPanel(kind, entryId) {
+  selectedBucketMap(kind).delete(entryId);
+  if (activeBucketSelection?.kind === kind && activeBucketSelection.entryId === entryId) {
+    const otherKind = kind === "logs" ? "dns" : "logs";
+    activeBucketSelection = selectedBucketMap(otherKind).has(entryId) ? { kind: otherKind, entryId } : null;
+  }
+  renderAllTimelines();
+}
+
+function moveSelectedTimelineBucket(direction) {
+  if (!activeBucketSelection) {
+    return false;
+  }
+  const { kind, entryId } = activeBucketSelection;
+  const timeline = timelineByValidator.get(entryId);
+  const buckets = selectableBuckets(timeline, kind);
+  if (!buckets.length) {
+    return false;
+  }
+  const selectedStart = selectedBucketMap(kind).get(entryId);
+  const index = buckets.findIndex((bucket) => (bucket.startOffsetSeconds || 0) === selectedStart);
+  if (index < 0) {
+    return false;
+  }
+  const nextIndex = Math.max(0, Math.min(buckets.length - 1, index + direction));
+  if (nextIndex === index) {
+    return true;
+  }
+  selectedBucketMap(kind).set(entryId, buckets[nextIndex].startOffsetSeconds || 0);
+  syncSiblingBucketSelection(kind, entryId, buckets[nextIndex].startOffsetSeconds || 0);
+  pendingBucketPanelFocus = { kind, entryId };
+  renderAllTimelines();
+  return true;
+}
+
+function shouldIgnoreTimelineKey(event) {
+  const target = event.target;
+  if (!target) {
+    return false;
+  }
+  return target.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName);
+}
+
 function logEventsForBucket(timeline, bucket) {
   const start = bucket?.startOffsetSeconds || 0;
   const end = bucket?.endOffsetSeconds || (start + (timeline?.bucketSeconds || 10));
@@ -549,8 +631,7 @@ function selectedLogBucket(timeline, entry) {
     return null;
   }
   return (timeline?.buckets || []).find((bucket) => {
-    const total = (bucket.stdoutCount || 0) + (bucket.stderrCount || 0);
-    return total && (bucket.startOffsetSeconds || 0) === selectedStart;
+    return (bucket.startOffsetSeconds || 0) === selectedStart;
   }) || null;
 }
 
@@ -562,6 +643,9 @@ function renderSelectedLogBucketPanel(timeline, entry) {
   }
   const panel = document.createElement("section");
   panel.className = "timeline-log-bucket-panel";
+  panel.tabIndex = -1;
+  panel.dataset.bucketPanelKind = "logs";
+  panel.dataset.entryId = entry.id;
   const head = document.createElement("div");
   head.className = "timeline-log-bucket-head";
   const title = document.createElement("strong");
@@ -574,8 +658,7 @@ function renderSelectedLogBucketPanel(timeline, entry) {
   close.className = "timeline-flow-toggle";
   close.textContent = "Close logs";
   close.addEventListener("click", () => {
-    selectedLogBuckets.delete(entry.id);
-    renderAllTimelines();
+    closeTimelineBucketPanel("logs", entry.id);
   });
   head.append(title, summary, close);
   panel.append(head);
@@ -629,7 +712,7 @@ function selectedDnsBucket(timeline, entry) {
     return null;
   }
   return (timeline?.buckets || []).find((bucket) => {
-    return (bucket.dnsQueryCount || 0) && (bucket.startOffsetSeconds || 0) === selectedStart;
+    return (bucket.startOffsetSeconds || 0) === selectedStart;
   }) || null;
 }
 
@@ -641,6 +724,9 @@ function renderSelectedDnsBucketPanel(timeline, entry) {
   }
   const panel = document.createElement("section");
   panel.className = "timeline-log-bucket-panel timeline-dns-bucket-panel";
+  panel.tabIndex = -1;
+  panel.dataset.bucketPanelKind = "dns";
+  panel.dataset.entryId = entry.id;
   const head = document.createElement("div");
   head.className = "timeline-log-bucket-head";
   const title = document.createElement("strong");
@@ -653,8 +739,7 @@ function renderSelectedDnsBucketPanel(timeline, entry) {
   close.className = "timeline-flow-toggle";
   close.textContent = "Close DNS";
   close.addEventListener("click", () => {
-    selectedDnsBuckets.delete(entry.id);
-    renderAllTimelines();
+    closeTimelineBucketPanel("dns", entry.id);
   });
   head.append(title, summary, close);
   panel.append(head);
@@ -824,6 +909,17 @@ function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
 
   const flowLabelNode = svgElement("text", { x: 18, y: flowTop + 17, class: "lane-label" });
   flowLabelNode.textContent = "Flows";
+  if (flows.length) {
+    flowLabelNode.classList.add("is-clickable");
+    flowLabelNode.addEventListener("click", () => {
+      if (expandedFlowCharts.has(entry.id)) {
+        expandedFlowCharts.delete(entry.id);
+      } else {
+        expandedFlowCharts.add(entry.id);
+      }
+      renderAllTimelines();
+    });
+  }
   svg.append(flowLabelNode);
   svg.append(svgElement("rect", { x: left, y: flowTop, width: plotWidth, height: flowHeight, class: "flow-lane" }));
   const verticalTicks = 6;
@@ -977,10 +1073,6 @@ function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
   });
   if (totalLogCount) {
     buckets.forEach((bucket) => {
-      const total = (bucket.stdoutCount || 0) + (bucket.stderrCount || 0);
-      if (!total) {
-        return;
-      }
       const x = xForOffset(bucket.startOffsetSeconds || 0);
       const groupIndex = Math.floor((bucket.startOffsetSeconds || 0) / (bucketSeconds || 10));
       const group = logGroupByIndex.get(groupIndex);
@@ -998,10 +1090,7 @@ function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
       hitbox.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        selectedLogBuckets.set(entry?.id, bucket.startOffsetSeconds || 0);
-        clearPinnedTimelineTooltip();
-        hideTimelineTooltip(true);
-        renderAllTimelines();
+        selectTimelineBucket("logs", entry.id, bucket.startOffsetSeconds || 0);
       });
       addHitboxHoverState(hitbox);
       svg.append(hitbox);
@@ -1042,10 +1131,6 @@ function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
   });
   if (totalDnsCount) {
     buckets.forEach((bucket) => {
-      const total = bucket.dnsQueryCount || 0;
-      if (!total) {
-        return;
-      }
       const x = xForOffset(bucket.startOffsetSeconds || 0);
       const bucketWidth = Math.max(2, xForOffset(bucket.endOffsetSeconds || ((bucket.startOffsetSeconds || 0) + bucketSeconds)) - x);
       const hitbox = svgElement("rect", {
@@ -1060,10 +1145,7 @@ function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
       hitbox.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        selectedDnsBuckets.set(entry?.id, bucket.startOffsetSeconds || 0);
-        clearPinnedTimelineTooltip();
-        hideTimelineTooltip(true);
-        renderAllTimelines();
+        selectTimelineBucket("dns", entry.id, bucket.startOffsetSeconds || 0);
       });
       addHitboxHoverState(hitbox);
       svg.append(hitbox);
@@ -1257,6 +1339,14 @@ function renderAllTimelines() {
     }
   }
   container.replaceChildren(fragment);
+  if (pendingBucketPanelFocus) {
+    const { kind, entryId } = pendingBucketPanelFocus;
+    const panel = container.querySelector(`[data-bucket-panel-kind="${kind}"][data-entry-id="${entryId}"]`);
+    if (panel) {
+      panel.focus({ preventScroll: true });
+    }
+    pendingBucketPanelFocus = null;
+  }
   attachTimelineScrollSync();
   const loaded = currentSummary.entries.filter((entry) => timelineByValidator.has(entry.id)).length;
   const open = currentSummary.entries.filter((entry) => timelineByValidator.has(entry.id) && !collapsedTimelineProfiles.has(entry.id)).length;
@@ -1269,6 +1359,8 @@ async function loadAllTimelines(summary) {
   collapsedTimelineProfiles.clear();
   selectedLogBuckets.clear();
   selectedDnsBuckets.clear();
+  activeBucketSelection = null;
+  pendingBucketPanelFocus = null;
   clearPinnedTimelineTooltip();
   timelineScrollRatio = 0;
   renderAllTimelines();
@@ -1665,6 +1757,15 @@ async function loadRun(runId) {
 
 function setupControls() {
   setupTimelineTooltipInteractions();
+  document.addEventListener("keydown", (event) => {
+    if ((event.key !== "ArrowLeft" && event.key !== "ArrowRight") || shouldIgnoreTimelineKey(event)) {
+      return;
+    }
+    const direction = event.key === "ArrowRight" ? 1 : -1;
+    if (moveSelectedTimelineBucket(direction)) {
+      event.preventDefault();
+    }
+  });
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => setView(button.dataset.view));
   });
