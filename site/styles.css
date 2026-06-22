@@ -390,11 +390,9 @@ a:hover {
   min-height: 120px;
 }
 
-.timeline-log-panel {
+.timeline-log-bucket-panel {
   display: grid;
-  gap: 2px;
-  max-height: 320px;
-  overflow: auto;
+  gap: 8px;
   margin-top: 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -406,7 +404,33 @@ a:hover {
   line-height: 1.45;
 }
 
-.timeline-log-row {
+.timeline-log-bucket-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-family: inherit;
+}
+
+.timeline-log-bucket-head .muted {
+  color: #aaa59a;
+}
+
+.timeline-log-bucket-head .timeline-flow-toggle {
+  margin-left: auto;
+  min-height: 26px;
+  background: #2b2b27;
+  color: #f3f0e8;
+}
+
+.timeline-log-bucket-body {
+  display: grid;
+  gap: 2px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.timeline-log-bucket-row {
   display: grid;
   grid-template-columns: 46px 48px minmax(0, 1fr);
   gap: 8px;
@@ -414,16 +438,37 @@ a:hover {
   white-space: pre-wrap;
 }
 
-.timeline-log-row.stderr {
+.timeline-log-bucket-row.stderr {
   color: #ffd0c9;
 }
 
-.timeline-log-time,
-.timeline-log-stream {
+.timeline-log-bucket-time,
+.timeline-log-bucket-stream,
+.timeline-log-bucket-empty {
   color: #aaa59a;
 }
 
-.timeline-log-message {
+.timeline-log-bucket-message {
+  overflow-wrap: anywhere;
+}
+
+.timeline-dns-bucket-panel {
+  background: #20222d;
+}
+
+.timeline-dns-bucket-row {
+  display: grid;
+  grid-template-columns: 46px minmax(180px, 0.7fr) minmax(0, 1fr);
+  gap: 8px;
+  min-width: 720px;
+}
+
+.timeline-dns-bucket-query {
+  color: #e6e1ff;
+  overflow-wrap: anywhere;
+}
+
+.timeline-dns-bucket-answers {
   overflow-wrap: anywhere;
 }
 
@@ -446,6 +491,10 @@ a:hover {
   fill: var(--ink);
   font-size: 13px;
   font-weight: 700;
+}
+
+.timeline-chart .lane-label.is-clickable {
+  cursor: pointer;
 }
 
 .timeline-card-title {
@@ -511,6 +560,21 @@ a:hover {
 
 .log-bar:hover {
   opacity: 1;
+}
+
+.log-bucket-hitbox,
+.chart-bucket-hitbox {
+  fill: transparent;
+  pointer-events: all;
+  cursor: pointer;
+}
+
+.log-bucket-hitbox:hover,
+.log-bucket-hitbox.is-hovered,
+.chart-bucket-hitbox:hover,
+.chart-bucket-hitbox.is-hovered {
+  fill: var(--accent);
+  opacity: 0.08;
 }
 
 .dns-lane {
@@ -585,6 +649,40 @@ a:hover {
 
 .timeline-tooltip.is-log-tooltip {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.timeline-tooltip.is-pinned {
+  pointer-events: auto;
+  user-select: text;
+}
+
+.timeline-tooltip-close {
+  position: sticky;
+  top: 0;
+  justify-self: end;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: white;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.timeline-tooltip-more {
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.timeline-tooltip-more:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .diff-list {
