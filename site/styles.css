@@ -300,12 +300,14 @@ a:hover {
 .timeline-list {
   display: grid;
   gap: 14px;
+  min-width: 0;
 }
 
 .timeline-card {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
+  min-width: 0;
   padding: 12px;
 }
 
@@ -374,6 +376,8 @@ a:hover {
 
 .timeline-chart-wrap {
   overflow-x: auto;
+  max-width: 100%;
+  scrollbar-gutter: stable;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #fbfbf8;
@@ -564,6 +568,11 @@ a:hover {
   .timeline-card-actions {
     align-items: start;
     justify-content: start;
+  }
+
+  .timeline-chart-wrap {
+    overflow-x: scroll;
+    -webkit-overflow-scrolling: touch;
   }
 }
 
