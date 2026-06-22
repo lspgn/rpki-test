@@ -25,11 +25,13 @@ const fileChunkCache = new Map();
 const timelineCache = new Map();
 const timelineByValidator = new Map();
 const expandedFlowCharts = new Set();
-const expandedLogPanels = new Set();
 const collapsedTimelineProfiles = new Set();
 const EXPANDED_FLOW_LIMIT = 80;
+const LOG_GROUP_PREVIEW_LIMIT = 8;
 let timelineScrollRatio = 0;
 let syncingTimelineScroll = false;
+let pinnedTimelineTooltip = null;
+let draggingTimelineTooltip = null;
 
 const formatter = new Intl.NumberFormat();
 const byteFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
@@ -314,37 +316,222 @@ function tooltip() {
   return document.querySelector("#timeline-tooltip");
 }
 
-function showTimelineTooltip(event, lines, className = "") {
+function clampTimelineTooltipPosition(node, left, top) {
+  const margin = 14;
+  const rect = node.getBoundingClientRect();
+  node.style.left = `${Math.max(margin, Math.min(left, window.innerWidth - rect.width - margin))}px`;
+  node.style.top = `${Math.max(margin, Math.min(top, window.innerHeight - rect.height - margin))}px`;
+}
+
+function positionTimelineTooltip(node, clientX, clientY) {
+  const margin = 14;
+  clampTimelineTooltipPosition(node, clientX + margin, clientY + margin);
+}
+
+function renderTimelineTooltipLines(node, lines, className = "", options = {}) {
+  const children = [];
+  if (options.pinned) {
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "timeline-tooltip-close";
+    close.setAttribute("aria-label", "Close tooltip");
+    close.textContent = "x";
+    close.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      clearPinnedTimelineTooltip();
+    });
+    children.push(close);
+  }
+  children.push(...lines.map((line) => {
+    const div = document.createElement("div");
+    if (typeof line === "string") {
+      div.textContent = line;
+      return div;
+    }
+    div.textContent = line.text || "";
+    if (line.kind === "more" && options.onMore) {
+      div.className = "timeline-tooltip-more";
+      div.setAttribute("role", "button");
+      div.tabIndex = 0;
+      const expand = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        options.onMore();
+      };
+      div.addEventListener("click", expand);
+      div.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          expand(event);
+        }
+      });
+    }
+    return div;
+  }));
+  node.replaceChildren(...children);
+  node.classList.add("is-visible");
+  node.classList.toggle("is-log-tooltip", className === "is-log-tooltip");
+  node.classList.toggle("is-pinned", Boolean(options.pinned));
+}
+
+function showTimelineTooltip(event, lines, className = "", options = {}) {
+  if (pinnedTimelineTooltip && !options.pinned) {
+    return;
+  }
   const node = tooltip();
   if (!node || !lines.length) {
     return;
   }
-  node.replaceChildren(...lines.map((line) => {
-    const div = document.createElement("div");
-    div.textContent = line;
-    return div;
-  }));
-  node.classList.add("is-visible");
-  node.classList.toggle("is-log-tooltip", className === "is-log-tooltip");
-  const margin = 14;
-  const rect = node.getBoundingClientRect();
-  const left = Math.min(event.clientX + margin, window.innerWidth - rect.width - margin);
-  const top = Math.min(event.clientY + margin, window.innerHeight - rect.height - margin);
-  node.style.left = `${Math.max(margin, left)}px`;
-  node.style.top = `${Math.max(margin, top)}px`;
+  renderTimelineTooltipLines(node, lines, className, options);
+  positionTimelineTooltip(node, event.clientX, event.clientY);
 }
 
-function hideTimelineTooltip() {
+function clearPinnedTimelineTooltip() {
+  pinnedTimelineTooltip = null;
+  draggingTimelineTooltip = null;
+  hideTimelineTooltip(true);
+}
+
+function expandPinnedTimelineTooltip() {
+  const node = tooltip();
+  if (!node || !pinnedTimelineTooltip) {
+    return;
+  }
+  pinnedTimelineTooltip.expanded = true;
+  const lines = pinnedTimelineTooltip.lines(true);
+  renderTimelineTooltipLines(node, lines, pinnedTimelineTooltip.className, {
+    pinned: true,
+    onMore: expandPinnedTimelineTooltip,
+  });
+  if (typeof pinnedTimelineTooltip.left === "number" && typeof pinnedTimelineTooltip.top === "number") {
+    node.style.left = `${pinnedTimelineTooltip.left}px`;
+    node.style.top = `${pinnedTimelineTooltip.top}px`;
+  } else {
+    positionTimelineTooltip(node, pinnedTimelineTooltip.clientX, pinnedTimelineTooltip.clientY);
+  }
+}
+
+function pinTimelineTooltip(event, lines, className = "") {
+  pinnedTimelineTooltip = {
+    className,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    expanded: false,
+    lines,
+  };
+  showTimelineTooltip(event, lines(false), className, {
+    pinned: true,
+    onMore: expandPinnedTimelineTooltip,
+  });
+  const node = tooltip();
+  if (node) {
+    const rect = node.getBoundingClientRect();
+    pinnedTimelineTooltip.left = rect.left;
+    pinnedTimelineTooltip.top = rect.top;
+  }
+}
+
+function hideTimelineTooltip(force = false) {
+  if (pinnedTimelineTooltip && !force) {
+    return;
+  }
   const node = tooltip();
   if (node) {
     node.classList.remove("is-visible");
     node.classList.remove("is-log-tooltip");
+    node.classList.remove("is-pinned");
   }
 }
 
 function addTooltipHandlers(node, lines, className = "") {
-  node.addEventListener("mousemove", (event) => showTimelineTooltip(event, lines, className));
+  const currentLines = () => (typeof lines === "function" ? lines(false) : lines);
+  node.addEventListener("mousemove", (event) => showTimelineTooltip(event, currentLines(), className));
   node.addEventListener("mouseleave", hideTimelineTooltip);
+}
+
+function addLogTooltipHandlers(node, lines) {
+  addTooltipHandlers(node, lines, "is-log-tooltip");
+  const pin = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    pinTimelineTooltip(event, lines, "is-log-tooltip");
+  };
+  node.addEventListener("pointerdown", pin);
+  node.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+}
+
+function setupTimelineTooltipInteractions() {
+  const node = tooltip();
+  if (!node) {
+    return;
+  }
+  node.addEventListener("click", (event) => event.stopPropagation());
+  node.addEventListener("pointerdown", (event) => {
+    if (!pinnedTimelineTooltip || event.target !== node) {
+      return;
+    }
+    const rect = node.getBoundingClientRect();
+    draggingTimelineTooltip = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+    };
+    node.setPointerCapture(event.pointerId);
+  });
+  node.addEventListener("pointermove", (event) => {
+    if (!draggingTimelineTooltip || draggingTimelineTooltip.pointerId !== event.pointerId) {
+      return;
+    }
+    const left = event.clientX - draggingTimelineTooltip.offsetX;
+    const top = event.clientY - draggingTimelineTooltip.offsetY;
+    clampTimelineTooltipPosition(node, left, top);
+    pinnedTimelineTooltip.left = Number.parseFloat(node.style.left);
+    pinnedTimelineTooltip.top = Number.parseFloat(node.style.top);
+  });
+  node.addEventListener("pointerup", (event) => {
+    if (draggingTimelineTooltip?.pointerId === event.pointerId) {
+      draggingTimelineTooltip = null;
+      node.releasePointerCapture(event.pointerId);
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && pinnedTimelineTooltip) {
+      clearPinnedTimelineTooltip();
+    }
+  });
+}
+
+function eventLines(group, expanded = false) {
+  const events = [...group.values].sort((left, right) => {
+    return (left.offsetSeconds || 0) - (right.offsetSeconds || 0)
+      || (left.stream || "").localeCompare(right.stream || "");
+  });
+  const stdout = events.filter((item) => item.stream === "stdout").length;
+  const stderr = events.filter((item) => item.stream === "stderr").length;
+  const visibleEvents = expanded ? events : events.slice(0, LOG_GROUP_PREVIEW_LIMIT);
+  const remaining = Math.max(0, events.length - LOG_GROUP_PREVIEW_LIMIT);
+  const rows = visibleEvents.map((item) => {
+    return `${formatOffset(item.offsetSeconds || 0)} ${item.stream || "log"}: ${item.message || ""}`;
+  });
+  return [
+    `${formatOffset(group.offsetSeconds)}-${formatOffset(group.offsetSeconds + group.bucketSeconds)} logs`,
+    `${formatCount(stdout)} stdout / ${formatCount(stderr)} stderr`,
+    ...rows,
+    ...(remaining && !expanded ? [{ kind: "more", text: `+${formatCount(remaining)} more logs` }] : []),
+  ];
+}
+
+function logBucketLines(bucket, group, expanded = false) {
+  if (group?.values?.length) {
+    return eventLines(group, expanded);
+  }
+  return [
+    `${formatOffset(bucket.startOffsetSeconds)}-${formatOffset(bucket.endOffsetSeconds)} logs`,
+    `${formatCount(bucket.stdoutCount || 0)} stdout / ${formatCount(bucket.stderrCount || 0)} stderr`,
+  ];
 }
 
 function groupedCounts(items, key, label, limit = 8) {
@@ -359,31 +546,6 @@ function groupedCounts(items, key, label, limit = 8) {
     .map(([value, count]) => `${formatCount(count)} ${label}: ${value}`);
   const remaining = Math.max(0, counts.size - limit);
   return remaining ? [...rows, `+${formatCount(remaining)} more ${label} groups`] : rows;
-}
-
-function eventLines(group) {
-  const stdout = group.values.filter((item) => item.stream === "stdout").length;
-  const stderr = group.values.filter((item) => item.stream === "stderr").length;
-  const byMessage = groupedCounts(
-    group.values,
-    (item) => `${item.stream}: ${item.message || ""}`,
-    "logs",
-  );
-  return [
-    `${formatOffset(group.offsetSeconds)}-${formatOffset(group.offsetSeconds + group.bucketSeconds)} logs`,
-    `${formatCount(stdout)} stdout / ${formatCount(stderr)} stderr`,
-    ...byMessage,
-  ];
-}
-
-function logBucketLines(bucket, group) {
-  if (group?.values?.length) {
-    return eventLines(group);
-  }
-  return [
-    `${formatOffset(bucket.startOffsetSeconds)}-${formatOffset(bucket.endOffsetSeconds)} logs`,
-    `${formatCount(bucket.stdoutCount || 0)} stdout / ${formatCount(bucket.stderrCount || 0)} stderr`,
-  ];
 }
 
 function dnsLines(group) {
@@ -538,6 +700,11 @@ function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
   const height = laneTop + laneHeight * lanes.length + 34;
   const plotWidth = width - left - right;
   const xForOffset = (offset) => left + (Math.max(0, offset || 0) / duration) * plotWidth;
+  const offsetForPointerEvent = (event) => {
+    const rect = svg.getBoundingClientRect();
+    const viewX = ((event.clientX - rect.left) / rect.width) * width;
+    return Math.max(0, ((viewX - left) / plotWidth) * duration);
+  };
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.style.minHeight = `${height}px`;
   svg.style.minWidth = `${width}px`;
@@ -581,9 +748,47 @@ function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
       addTooltipHandlers(heat, heatBinLines(bin));
       svg.append(heat);
     });
+    const flowHeatBinForEvent = (event) => {
+      const offsetSeconds = offsetForPointerEvent(event);
+      return bins.find((bin) => {
+        return bin.bytes && offsetSeconds >= bin.start && offsetSeconds < bin.end;
+      });
+    };
+    const flowHeatHitbox = svgElement("rect", {
+      x: left,
+      y: flowTop,
+      width: plotWidth,
+      height: flowHeight,
+      fill: "transparent",
+      opacity: 0,
+      class: "chart-bucket-hitbox",
+    });
+    flowHeatHitbox.addEventListener("mousemove", (event) => {
+      const bin = flowHeatBinForEvent(event);
+      if (bin) {
+        showTimelineTooltip(event, heatBinLines(bin));
+      } else {
+        hideTimelineTooltip();
+      }
+    });
+    flowHeatHitbox.addEventListener("mouseleave", hideTimelineTooltip);
+    flowHeatHitbox.addEventListener("pointerdown", (event) => {
+      const bin = flowHeatBinForEvent(event);
+      if (!bin) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      pinTimelineTooltip(event, () => heatBinLines(bin));
+    });
+    flowHeatHitbox.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
     const hint = svgElement("text", { x: left, y: flowTop + 17, class: "flow-label" });
     hint.textContent = `${formatCount(flows.length)} flows, heat by exchanged bytes`;
     svg.append(hint);
+    svg.append(flowHeatHitbox);
   } else {
     visibleFlows.forEach((flow, index) => {
       const y = flowTop + 10 + index * flowRowHeight;
@@ -658,7 +863,7 @@ function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
         height: Math.max(1, stdoutHeight),
         class: "log-bar stdout",
       });
-      addTooltipHandlers(stdoutBar, logBucketLines(bucket, group), "is-log-tooltip");
+      addLogTooltipHandlers(stdoutBar, (expanded) => logBucketLines(bucket, group, expanded));
       svg.append(stdoutBar);
     }
     if (stderrHeight > 0) {
@@ -670,10 +875,58 @@ function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
         height: Math.max(1, stderrHeight),
         class: "log-bar stderr",
       });
-      addTooltipHandlers(stderrBar, logBucketLines(bucket, group), "is-log-tooltip");
+      addLogTooltipHandlers(stderrBar, (expanded) => logBucketLines(bucket, group, expanded));
       svg.append(stderrBar);
     }
   });
+  if (totalLogCount) {
+    const logBucketForEvent = (event) => {
+      const offsetSeconds = offsetForPointerEvent(event);
+      const bucket = buckets.find((candidate) => {
+        const total = (candidate.stdoutCount || 0) + (candidate.stderrCount || 0);
+        return total
+          && offsetSeconds >= (candidate.startOffsetSeconds || 0)
+          && offsetSeconds < (candidate.endOffsetSeconds || ((candidate.startOffsetSeconds || 0) + bucketSeconds));
+      });
+      if (!bucket) {
+        return null;
+      }
+      const groupIndex = Math.floor((bucket.startOffsetSeconds || 0) / (bucketSeconds || 10));
+      return { bucket, group: logGroupByIndex.get(groupIndex) };
+    };
+    const hitbox = svgElement("rect", {
+      x: left,
+      y: logTop,
+      width: plotWidth,
+      height: logHeight,
+      fill: "transparent",
+      opacity: 0,
+      class: "log-bucket-hitbox",
+    });
+    hitbox.addEventListener("mousemove", (event) => {
+      const context = logBucketForEvent(event);
+      if (context) {
+        showTimelineTooltip(event, logBucketLines(context.bucket, context.group), "is-log-tooltip");
+      } else {
+        hideTimelineTooltip();
+      }
+    });
+    hitbox.addEventListener("mouseleave", hideTimelineTooltip);
+    hitbox.addEventListener("pointerdown", (event) => {
+      const context = logBucketForEvent(event);
+      if (!context) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      pinTimelineTooltip(event, (expanded) => logBucketLines(context.bucket, context.group, expanded), "is-log-tooltip");
+    });
+    hitbox.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    svg.append(hitbox);
+  }
   svg.append(svgElement("line", { x1: left, x2: width - right, y1: logBottom, y2: logBottom, class: "axis" }));
 
   const dnsLabel = svgElement("text", { x: 18, y: dnsTop + 17, class: "lane-label" });
@@ -710,6 +963,54 @@ function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
     addTooltipHandlers(bar, dnsBucketLines(bucket, group));
     svg.append(bar);
   });
+  if (totalDnsCount) {
+    const dnsBucketForEvent = (event) => {
+      const offsetSeconds = offsetForPointerEvent(event);
+      const bucket = buckets.find((candidate) => {
+        const total = candidate.dnsQueryCount || 0;
+        return total
+          && offsetSeconds >= (candidate.startOffsetSeconds || 0)
+          && offsetSeconds < (candidate.endOffsetSeconds || ((candidate.startOffsetSeconds || 0) + bucketSeconds));
+      });
+      if (!bucket) {
+        return null;
+      }
+      const groupIndex = Math.floor((bucket.startOffsetSeconds || 0) / (bucketSeconds || 10));
+      return { bucket, group: dnsGroupByIndex.get(groupIndex) };
+    };
+    const dnsHitbox = svgElement("rect", {
+      x: left,
+      y: dnsTop,
+      width: plotWidth,
+      height: dnsHeight,
+      fill: "transparent",
+      opacity: 0,
+      class: "chart-bucket-hitbox",
+    });
+    dnsHitbox.addEventListener("mousemove", (event) => {
+      const context = dnsBucketForEvent(event);
+      if (context) {
+        showTimelineTooltip(event, dnsBucketLines(context.bucket, context.group));
+      } else {
+        hideTimelineTooltip();
+      }
+    });
+    dnsHitbox.addEventListener("mouseleave", hideTimelineTooltip);
+    dnsHitbox.addEventListener("pointerdown", (event) => {
+      const context = dnsBucketForEvent(event);
+      if (!context) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      pinTimelineTooltip(event, () => dnsBucketLines(context.bucket, context.group));
+    });
+    dnsHitbox.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    svg.append(dnsHitbox);
+  }
   svg.append(svgElement("line", { x1: left, x2: width - right, y1: dnsBottom, y2: dnsBottom, class: "axis" }));
 
   lanes.forEach((key, laneIndex) => {
@@ -775,37 +1076,6 @@ function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
   svg.append(svgElement("line", { x1: left, x2: left, y1: flowTop, y2: height - 24, class: "axis" }));
 }
 
-function renderLogPanel(timeline) {
-  const panel = document.createElement("div");
-  panel.className = "timeline-log-panel";
-  const events = [...(timeline?.events || [])].sort((left, right) => {
-    return (left.offsetSeconds || 0) - (right.offsetSeconds || 0)
-      || (left.stream || "").localeCompare(right.stream || "");
-  });
-  if (!events.length) {
-    panel.textContent = "No log events";
-    return panel;
-  }
-  const fragment = document.createDocumentFragment();
-  for (const item of events) {
-    const row = document.createElement("div");
-    row.className = `timeline-log-row ${item.stream === "stderr" ? "stderr" : "stdout"}`;
-    const time = document.createElement("span");
-    time.className = "timeline-log-time";
-    time.textContent = formatOffset(item.offsetSeconds || 0);
-    const stream = document.createElement("span");
-    stream.className = "timeline-log-stream";
-    stream.textContent = item.stream || "log";
-    const message = document.createElement("span");
-    message.className = "timeline-log-message";
-    message.textContent = item.message || "";
-    row.append(time, stream, message);
-    fragment.append(row);
-  }
-  panel.append(fragment);
-  return panel;
-}
-
 function renderTimelineCard(entry, timeline, scaleDuration) {
   const article = document.createElement("article");
   article.className = "timeline-card";
@@ -838,19 +1108,6 @@ function renderTimelineCard(entry, timeline, scaleDuration) {
     }
     renderAllTimelines();
   });
-  const logsToggle = document.createElement("button");
-  logsToggle.type = "button";
-  logsToggle.className = "timeline-flow-toggle";
-  logsToggle.textContent = expandedLogPanels.has(entry.id) ? "Collapse logs" : "Expand logs";
-  logsToggle.disabled = events === 0 || collapsed;
-  logsToggle.addEventListener("click", () => {
-    if (expandedLogPanels.has(entry.id)) {
-      expandedLogPanels.delete(entry.id);
-    } else {
-      expandedLogPanels.add(entry.id);
-    }
-    renderAllTimelines();
-  });
   const profileToggle = document.createElement("button");
   profileToggle.type = "button";
   profileToggle.className = "timeline-flow-toggle";
@@ -863,7 +1120,7 @@ function renderTimelineCard(entry, timeline, scaleDuration) {
     }
     renderAllTimelines();
   });
-  actions.append(summary, flowToggle, logsToggle, profileToggle);
+  actions.append(summary, flowToggle, profileToggle);
   head.append(title, actions);
   article.append(head);
   if (collapsed) {
@@ -875,9 +1132,6 @@ function renderTimelineCard(entry, timeline, scaleDuration) {
   wrap.append(svg);
   article.append(wrap);
   renderTimelineChart(svg, timeline, entry, scaleDuration);
-  if (expandedLogPanels.has(entry.id)) {
-    article.append(renderLogPanel(timeline));
-  }
   return article;
 }
 
@@ -947,7 +1201,7 @@ function renderAllTimelines() {
 async function loadAllTimelines(summary) {
   timelineByValidator.clear();
   collapsedTimelineProfiles.clear();
-  expandedLogPanels.clear();
+  clearPinnedTimelineTooltip();
   timelineScrollRatio = 0;
   renderAllTimelines();
   await Promise.all(
@@ -1342,6 +1596,7 @@ async function loadRun(runId) {
 }
 
 function setupControls() {
+  setupTimelineTooltipInteractions();
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => setView(button.dataset.view));
   });
