@@ -10,6 +10,7 @@ let currentReport = null;
 let currentPayload = "routeOrigins";
 
 const formatter = new Intl.NumberFormat();
+const byteFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
 
 async function fetchJson(path) {
   const response = await fetch(path, { cache: "no-store" });
@@ -25,6 +26,20 @@ function metric(label, value) {
   node.querySelector(".metric-label").textContent = label;
   node.querySelector(".metric-value").textContent = value;
   return node;
+}
+
+function formatBytes(value) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "unknown";
+  }
+  const units = ["B", "KB", "MB", "GB"];
+  let size = value;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${byteFormatter.format(size)} ${units[unit]}`;
 }
 
 function setSubtitle(summary) {
@@ -79,11 +94,20 @@ function renderEntries(summary) {
       <td>${entry.version}</td>
       <td></td>
       <td>${unsupported ? '<span class="muted">unsupported</span>' : formatter.format(entry.counts[currentPayload] || 0)}</td>
+      <td></td>
       <td>${(entry.unsupported || []).length ? entry.unsupported.join(", ") : '<span class="muted">none</span>'}</td>
       <td></td>
     `;
     row.children[2].replaceChildren(status);
-    row.children[5].replaceChildren(downloads);
+    const cache = document.createElement("span");
+    if (entry.cacheTree) {
+      cache.textContent = `${formatter.format(entry.cacheTree.files || 0)} (${formatBytes(entry.cacheTree.size || 0)})`;
+    } else {
+      cache.className = "muted";
+      cache.textContent = "none";
+    }
+    row.children[4].replaceChildren(cache);
+    row.children[6].replaceChildren(downloads);
     tbody.append(row);
   }
 }
@@ -119,7 +143,9 @@ function renderPresence(report) {
     const cell = document.createElement("td");
     cell.colSpan = 3;
     cell.className = "muted";
-    cell.textContent = "No objects are available for this payload.";
+    cell.textContent = report && report.totalObjects
+      ? `No object presence differences across ${formatter.format(report.totalObjects)} objects.`
+      : "No objects are available for this payload.";
     row.append(cell);
     tbody.append(row);
     return;

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from aggregate_results import main as aggregate_main  # noqa: E402
+from aggregate_results import cache_tree_from_archive, main as aggregate_main  # noqa: E402
 from rpki_project import load_config, normalize_payloads, payload_counts, read_json, validators, write_json  # noqa: E402
 from run_validator import compress_raw_files, write_cache_tree  # noqa: E402
 
@@ -135,6 +136,7 @@ class AggregateTests(unittest.TestCase):
             self.assertEqual(len(latest["entries"]), 2)
             self.assertEqual(latest["reports"]["routeOrigins"]["totalObjects"], 2)
             self.assertEqual(latest["reports"]["routeOrigins"]["differingObjects"], 1)
+            self.assertEqual(latest["reports"]["routeOrigins"]["includedRows"], 1)
             extra = [row for row in report["rows"] if row["object"]["prefix"] == "198.51.100.0/24"][0]
             self.assertEqual(extra["seenBy"], ["routinator-test"])
             self.assertEqual(extra["missingFrom"], ["fort-test"])
@@ -185,6 +187,35 @@ class ArtifactTests(unittest.TestCase):
             self.assertIn("contentSha256", raw_files[0])
             self.assertTrue((raw_dir / "validator.json.gz").exists())
             self.assertFalse(raw.exists())
+
+    def test_cache_tree_can_be_derived_from_legacy_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            archive = root / "work-cache.tar.gz"
+            target = root / "cache-tree.json"
+            cache_file = source / "cache/repository/example/roa.cer"
+            tal_file = source / "tals/example.tal"
+            cache_file.parent.mkdir(parents=True)
+            tal_file.parent.mkdir(parents=True)
+            cache_file.write_text("certificate", encoding="utf-8")
+            tal_file.write_text("tal", encoding="utf-8")
+            with tarfile.open(archive, "w:gz") as tar:
+                tar.add(source / "cache", arcname="cache")
+                tar.add(source / "tals", arcname="tals")
+
+            summary = cache_tree_from_archive(archive, target)
+            tree = read_json(target)
+
+            self.assertEqual(summary["files"], 2)
+            paths = {
+                f"{entry['root']}/{item['path']}": item
+                for entry in tree["entries"]
+                for item in entry["files"]
+            }
+            self.assertIn("cache/repository/example/roa.cer", paths)
+            self.assertIn("tals/example.tal", paths)
+            self.assertIn("sha256", paths["cache/repository/example/roa.cer"])
 
 
 if __name__ == "__main__":

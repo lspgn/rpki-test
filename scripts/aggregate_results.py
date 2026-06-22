@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import shutil
+import tarfile
 from collections import Counter, defaultdict
 from itertools import combinations
 from pathlib import Path
@@ -65,12 +67,67 @@ def summarize_result_dirs(result_dirs: list[Path]) -> None:
                 print(f"    {source}")
 
 
+def cache_tree_from_archive(archive_path: Path, target_path: Path) -> dict[str, Any]:
+    roots = ("cache", "tals")
+    root_files: dict[str, list[dict[str, Any]]] = {root: [] for root in roots}
+    root_sizes = {root: 0 for root in roots}
+    total_files = 0
+    total_size = 0
+
+    with tarfile.open(archive_path, "r:gz") as tar:
+        for member in tar:
+            if not member.isfile():
+                continue
+            parts = Path(member.name).parts
+            if len(parts) < 2 or parts[0] not in root_files:
+                continue
+            stream = tar.extractfile(member)
+            if stream is None:
+                continue
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+            rel = Path(*parts[1:]).as_posix()
+            item = {"path": rel, "size": member.size, "sha256": digest.hexdigest()}
+            root_files[parts[0]].append(item)
+            root_sizes[parts[0]] += member.size
+            total_files += 1
+            total_size += member.size
+
+    entries = []
+    for root in roots:
+        entries.append(
+            {
+                "root": root,
+                "files": sorted(root_files[root], key=lambda item: item["path"]),
+                "size": root_sizes[root],
+            }
+        )
+    tree = {
+        "roots": list(roots),
+        "files": total_files,
+        "size": total_size,
+        "entries": entries,
+        "source": {
+            "path": "archives/work-cache.tar.gz",
+            "size": archive_path.stat().st_size,
+        },
+    }
+    write_json(target_path, tree)
+    return {"path": "cache-tree.json", "roots": list(roots), "files": total_files, "size": total_size}
+
+
 def copy_result(result_dir: Path, target_dir: Path) -> dict[str, Any]:
     target_dir.mkdir(parents=True, exist_ok=True)
     for name in ("status.json", "normalized.json", "stdout.log", "stderr.log", "cache-tree.json"):
         source = result_dir / name
         if source.exists():
             shutil.copy2(source, target_dir / name)
+    if not (target_dir / "cache-tree.json").exists():
+        archive_path = result_dir / "archives" / "work-cache.tar.gz"
+        if archive_path.exists():
+            print(f"Deriving cache-tree.json from {archive_path}")
+            cache_tree_from_archive(archive_path, target_dir / "cache-tree.json")
     for source in sorted(result_dir.glob("*.log")):
         if source.name not in {"stdout.log", "stderr.log"}:
             shutil.copy2(source, target_dir / source.name)
@@ -149,6 +206,17 @@ def object_label(payload: str, item: dict[str, Any]) -> str:
     raise ValueError(f"unknown payload: {payload}")
 
 
+def report_object_key(payload: str, item: dict[str, Any]) -> str:
+    if payload == "routeOrigins":
+        return f"{item.get('asn')}|{item.get('prefix')}|{item.get('maxLength')}"
+    if payload == "routerKeys":
+        return f"{item.get('asn')}|{item.get('ski')}|{item.get('routerPublicKey')}"
+    if payload == "aspas":
+        providers = ",".join(str(provider) for provider in item.get("providers", []))
+        return f"{item.get('customer')}|{item.get('afi')}|{providers}"
+    raise ValueError(f"unknown payload: {payload}")
+
+
 def build_object_report(payload: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
     eligible = [
         entry
@@ -161,7 +229,7 @@ def build_object_report(payload: str, entries: list[dict[str, Any]]) -> dict[str
 
     for entry in eligible:
         for item in entry["normalized"].get(payload, []):
-            key = payload_key(payload, item)
+            key = report_object_key(payload, item)
             objects.setdefault(key, item)
             seen_by.setdefault(key, set()).add(entry["id"])
 
@@ -181,12 +249,14 @@ def build_object_report(payload: str, entries: list[dict[str, Any]]) -> dict[str
         )
     rows.sort(key=lambda row: (not row["divergent"], row["label"], row["key"]))
     differing = sum(1 for row in rows if row["divergent"])
+    visible_rows = [row for row in rows if row["divergent"]]
     return {
         "payload": payload,
         "eligibleValidators": eligible_ids,
         "totalObjects": len(rows),
         "differingObjects": differing,
-        "rows": rows,
+        "includedRows": len(visible_rows),
+        "rows": visible_rows,
     }
 
 
@@ -202,6 +272,7 @@ def write_object_reports(run_dir: Path, run_id: str, entries: list[dict[str, Any
             "eligibleValidators": report["eligibleValidators"],
             "totalObjects": report["totalObjects"],
             "differingObjects": report["differingObjects"],
+            "includedRows": report["includedRows"],
         }
     return reports
 
@@ -248,13 +319,21 @@ def main() -> None:
             if path.name not in {"stdout.log", "stderr.log"}
         ]
         cache_tree_path = None
-        if (entry_dir / "cache-tree.json").exists():
+        cache_tree_metadata = copied_status.get("cacheTree") or None
+        cache_tree_file = entry_dir / "cache-tree.json"
+        if cache_tree_file.exists():
             cache_tree_path = f"data/runs/{run_id}/{copied_status['id']}/cache-tree.json"
-        status_cache_tree = copied_status.get("cacheTree") or {}
+            if cache_tree_metadata is None:
+                tree = read_json(cache_tree_file)
+                cache_tree_metadata = {
+                    "path": "cache-tree.json",
+                    "roots": tree.get("roots", []),
+                    "files": tree.get("files", 0),
+                    "size": tree.get("size", 0),
+                }
+        status_cache_tree = cache_tree_metadata or {}
         cache_tree_summary = "cacheTree=missing"
         if cache_tree_path:
-            if not status_cache_tree:
-                status_cache_tree = read_json(entry_dir / "cache-tree.json")
             cache_tree_summary = (
                 f"cacheTree={status_cache_tree.get('files', '?')} files "
                 f"{status_cache_tree.get('size', '?')} bytes"
@@ -281,6 +360,7 @@ def main() -> None:
                 "payloads": copied_status.get("payloads", {}),
                 "unsupported": copied_status.get("unsupported", []),
                 "counts": counts,
+                "cacheTree": cache_tree_metadata,
                 "paths": {
                     "status": f"data/runs/{run_id}/{copied_status['id']}/status.json",
                     "normalized": f"data/runs/{run_id}/{copied_status['id']}/normalized.json",
