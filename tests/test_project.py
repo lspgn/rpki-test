@@ -349,6 +349,27 @@ class TimelineTests(unittest.TestCase):
                                     "packetCount": 2,
                                 }
                             ],
+                        },
+                        {
+                            "protocol": "TCP",
+                            "remoteAddress": "203.0.113.20",
+                            "remotePort": 443,
+                            "dnsNames": ["late.example.net"],
+                            "totalRxBytes": 700,
+                            "totalTxBytes": 300,
+                            "packetCount": 2,
+                            "firstSeenEpoch": 1782086420.0,
+                            "lastSeenEpoch": 1782086421.0,
+                            "samples": [
+                                {
+                                    "startOffsetSeconds": 16,
+                                    "rxBytes": 700,
+                                    "txBytes": 300,
+                                    "rxBps": 700,
+                                    "txBps": 300,
+                                    "packetCount": 2,
+                                }
+                            ],
                         }
                     ]
                 },
@@ -373,6 +394,12 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(timeline["network"]["flows"][0]["dnsNames"], ["repo.example.net"])
         self.assertEqual(timeline["network"]["flows"][0]["firstSeenOffsetSeconds"], 5)
         self.assertEqual(timeline["network"]["flows"][0]["lastSeenOffsetSeconds"], 7.5)
+        late_flow = next(flow for flow in timeline["network"]["flows"] if flow["remoteAddress"] == "203.0.113.20")
+        self.assertEqual(late_flow["firstSeenOffsetSeconds"], 20)
+        self.assertEqual(late_flow["samples"][0]["offsetSeconds"], 21)
+        late_bucket = next(bucket for bucket in timeline["buckets"] if bucket["startOffsetSeconds"] == 20)
+        self.assertEqual(late_bucket["flowRxBytes"], 700)
+        self.assertEqual(late_bucket["flowTxBytes"], 300)
 
 
 class ObservabilityToolingTests(unittest.TestCase):

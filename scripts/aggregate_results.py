@@ -706,6 +706,9 @@ def load_network_flows(path: Path, start_epoch: float | None) -> list[dict[str, 
         if isinstance(flow, dict) and isinstance(flow.get("firstSeenEpoch"), (int, float)):
             value = float(flow["firstSeenEpoch"])
             first_epoch = value if first_epoch is None else min(first_epoch, value)
+    capture_base_offset = 0.0
+    if start_epoch is not None and first_epoch is not None:
+        capture_base_offset = max(0.0, first_epoch - start_epoch)
     output = []
     for flow in flows:
         if not isinstance(flow, dict):
@@ -727,7 +730,7 @@ def load_network_flows(path: Path, start_epoch: float | None) -> list[dict[str, 
             sample_offset = numeric_offset(sample.get("startOffsetSeconds")) or 0.0
             samples.append(
                 {
-                    "offsetSeconds": round(base_offset + sample_offset, 3),
+                    "offsetSeconds": round(capture_base_offset + sample_offset, 3),
                     "rxBytes": sample.get("rxBytes") or 0,
                     "txBytes": sample.get("txBytes") or 0,
                     "rxBps": sample.get("rxBps") or 0,
