@@ -27,6 +27,24 @@ COMMANDS = (
 )
 
 
+def path_status(value: str) -> dict[str, Any]:
+    path = Path(value)
+    try:
+        exists = path.exists()
+    except OSError as exc:
+        return {"exists": None, "readable": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    readable = False
+    error = None
+    if exists:
+        try:
+            path.stat()
+            readable = os.access(path, os.R_OK)
+        except OSError as exc:
+            error = f"{type(exc).__name__}: {exc}"
+    return {"exists": exists, "readable": readable, "error": error}
+
+
 def command_version(command: str) -> str | None:
     path = shutil.which(command)
     if path is None:
@@ -61,9 +79,9 @@ def collect_tooling_status() -> dict[str, Any]:
     is_root = hasattr(os, "geteuid") and os.geteuid() == 0
     kernel = platform.release()
     paths = {
-        "/sys/fs/bpf": Path("/sys/fs/bpf").exists(),
-        "/sys/kernel/debug/tracing": Path("/sys/kernel/debug/tracing").exists(),
-        "/sys/kernel/tracing": Path("/sys/kernel/tracing").exists(),
+        "/sys/fs/bpf": path_status("/sys/fs/bpf"),
+        "/sys/kernel/debug/tracing": path_status("/sys/kernel/debug/tracing"),
+        "/sys/kernel/tracing": path_status("/sys/kernel/tracing"),
     }
     required_for_reports = ("tcpdump", "tshark", "tcptop-bpfcc", "tcplife-bpfcc")
     missing = [command for command in required_for_reports if not commands[command]["available"]]
@@ -96,8 +114,11 @@ def write_log(path: Path, status: dict[str, Any]) -> None:
         if item.get("version"):
             value += f" ({item['version']})"
         lines.append(f"command.{command}={value}")
-    for name, exists in status["kernelPaths"].items():
-        lines.append(f"path.{name}={exists}")
+    for name, item in status["kernelPaths"].items():
+        line = f"path.{name}.exists={item['exists']} readable={item['readable']}"
+        if item.get("error"):
+            line += f" error={item['error']}"
+        lines.append(line)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
