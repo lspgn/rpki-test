@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from aggregate_results import main as aggregate_main  # noqa: E402
 from rpki_project import load_config, normalize_payloads, payload_counts, read_json, validators, write_json  # noqa: E402
 from run_validator import archive_work_dir, parse_bytes, summarize_docker_stats  # noqa: E402
+from summarize_tcp_bps import parse_tcptop  # noqa: E402
 
 
 class NormalizationTests(unittest.TestCase):
@@ -100,6 +101,33 @@ class ResourceUsageTests(unittest.TestCase):
         self.assertEqual(summary["peakPids"], 8)
 
 
+class TcpFlowSummaryTests(unittest.TestCase):
+    def test_parse_tcptop_summarizes_flow_bytes_and_rates(self) -> None:
+        text = """Tracing... Output every 1 secs. Hit Ctrl-C to end
+12:00:00 loadavg: 0.00 0.01 0.05 1/100 1234
+PID    COMM         LADDR                 RADDR                  RX_KB TX_KB
+42     validator    10.0.0.2:50000        203.0.113.10:443       4     1
+12:00:01 loadavg: 0.00 0.01 0.05 1/100 1234
+PID    COMM         LADDR                 RADDR                  RX_KB TX_KB
+42     validator    10.0.0.2:50000        203.0.113.10:443       8     2
+42     validator    10.0.0.2:50001        192.0.2.53:53          1     0
+"""
+
+        summary = parse_tcptop(text, interval_seconds=1.0)
+
+        self.assertEqual(summary["sampleCount"], 3)
+        self.assertEqual(summary["flowCount"], 2)
+        self.assertEqual(summary["totalRxBytes"], 13 * 1024)
+        self.assertEqual(summary["totalTxBytes"], 3 * 1024)
+        flow = next(item for item in summary["flows"] if item["remotePort"] == 443)
+        self.assertEqual(flow["sampleCount"], 2)
+        self.assertEqual(flow["totalRxBytes"], 12 * 1024)
+        self.assertEqual(flow["totalTxBytes"], 3 * 1024)
+        self.assertEqual(flow["minRxBps"], 4 * 1024)
+        self.assertEqual(flow["maxRxBps"], 8 * 1024)
+        self.assertEqual(flow["samples"][0]["time"], "12:00:00")
+
+
 class AggregateTests(unittest.TestCase):
     def test_fixture_site_build(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -142,6 +170,7 @@ class AggregateTests(unittest.TestCase):
                 ebpf_dir.mkdir()
                 (ebpf_dir / "dns-queries.tsv").write_text("time\tsrc\tdst\tquery\n", encoding="utf-8")
                 (ebpf_dir / "tcp-bps.log").write_text("127.0.0.1:443 1024\n", encoding="utf-8")
+                write_json(ebpf_dir / "tcp-flows.json", {"flowCount": 1, "flows": []})
                 (ebpf_dir / "dns.pcap").write_bytes(b"not published")
                 write_json(out / "normalized.json", normalize_payloads([raw], {**status, "image": "fixture"}))
                 (out / "stdout.log").write_text("", encoding="utf-8")
@@ -175,6 +204,7 @@ class AggregateTests(unittest.TestCase):
             self.assertTrue(any(path.endswith("resource-usage.json") for path in observability))
             self.assertTrue(any(path.endswith("ebpf/dns-queries.tsv") for path in observability))
             self.assertTrue(any(path.endswith("ebpf/tcp-bps.log") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/tcp-flows.json") for path in observability))
             self.assertFalse(any(path.endswith("dns.pcap") for path in observability))
             self.assertTrue((public / "index.html").exists())
 

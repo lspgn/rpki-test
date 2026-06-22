@@ -117,6 +117,7 @@ jobs:
             out/${{ matrix.id }}/docker-stats.jsonl
             out/${{ matrix.id }}/ebpf/dns-queries.tsv
             out/${{ matrix.id }}/ebpf/tcp-bps.log
+            out/${{ matrix.id }}/ebpf/tcp-flows.json
             out/${{ matrix.id }}/ebpf/tcp-life.log
             out/${{ matrix.id }}/*.log
             out/${{ matrix.id }}/normalized.json

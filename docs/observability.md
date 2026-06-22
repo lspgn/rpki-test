@@ -6,7 +6,8 @@ entry and publishes these artifacts:
 - `resource-usage.json`: calculated CPU, memory, PID, and network summary
 - `docker-stats.jsonl`: raw `docker stats --no-stream --format '{{json .}}'` samples
 - `ebpf/dns-queries.tsv`: derived DNS query report, when collected
-- `ebpf/tcp-bps.log` and `ebpf/tcp-life.log`: derived byte/connection reports, when collected
+- `ebpf/tcp-flows.json`: per-flow RX/TX bytes plus min/max rates over time, when collected
+- `ebpf/tcp-bps.log` and `ebpf/tcp-life.log`: source byte/connection reports, when collected
 
 The dashboard surfaces peak processor cores and peak RAM for each validator.
 Use `resource-usage.json` as the sizing input for routine capacity planning:
@@ -59,6 +60,9 @@ Capture per-IP/port TCP throughput and lifetimes:
 
 ```sh
 sudo tcptop-bpfcc -p "$pid" -C 1 > "out/routinator-0_15_2/ebpf/tcp-bps.log"
+python3 scripts/summarize_tcp_bps.py \
+  --input "out/routinator-0_15_2/ebpf/tcp-bps.log" \
+  --output "out/routinator-0_15_2/ebpf/tcp-flows.json"
 sudo tcplife-bpfcc -p "$pid" > "out/routinator-0_15_2/ebpf/tcp-life.log"
 ```
 
