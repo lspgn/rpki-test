@@ -27,6 +27,8 @@ const timelineByValidator = new Map();
 const expandedFlowCharts = new Set();
 const collapsedTimelineProfiles = new Set();
 const EXPANDED_FLOW_LIMIT = 80;
+let timelineScrollRatio = 0;
+let syncingTimelineScroll = false;
 
 const formatter = new Intl.NumberFormat();
 const byteFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
@@ -829,6 +831,34 @@ function renderTimelineCard(entry, timeline, scaleDuration) {
   return article;
 }
 
+function syncTimelineScroll(source) {
+  const maxScroll = source.scrollWidth - source.clientWidth;
+  timelineScrollRatio = maxScroll > 0 ? source.scrollLeft / maxScroll : 0;
+  syncingTimelineScroll = true;
+  document.querySelectorAll(".timeline-chart-wrap").forEach((wrap) => {
+    if (wrap === source) {
+      return;
+    }
+    const targetMax = wrap.scrollWidth - wrap.clientWidth;
+    wrap.scrollLeft = targetMax > 0 ? timelineScrollRatio * targetMax : 0;
+  });
+  requestAnimationFrame(() => {
+    syncingTimelineScroll = false;
+  });
+}
+
+function attachTimelineScrollSync() {
+  document.querySelectorAll(".timeline-chart-wrap").forEach((wrap) => {
+    const maxScroll = wrap.scrollWidth - wrap.clientWidth;
+    wrap.scrollLeft = maxScroll > 0 ? timelineScrollRatio * maxScroll : 0;
+    wrap.addEventListener("scroll", () => {
+      if (!syncingTimelineScroll) {
+        syncTimelineScroll(wrap);
+      }
+    });
+  });
+}
+
 function renderAllTimelines() {
   const container = document.querySelector("#timelines");
   if (!currentSummary?.entries?.length) {
@@ -857,6 +887,7 @@ function renderAllTimelines() {
     }
   }
   container.replaceChildren(fragment);
+  attachTimelineScrollSync();
   const loaded = currentSummary.entries.filter((entry) => timelineByValidator.has(entry.id)).length;
   const open = currentSummary.entries.filter((entry) => timelineByValidator.has(entry.id) && !collapsedTimelineProfiles.has(entry.id)).length;
   document.querySelector("#timeline-summary").textContent =
@@ -866,6 +897,7 @@ function renderAllTimelines() {
 async function loadAllTimelines(summary) {
   timelineByValidator.clear();
   collapsedTimelineProfiles.clear();
+  timelineScrollRatio = 0;
   renderAllTimelines();
   await Promise.all(
     summary.entries.map(async (entry) => {
