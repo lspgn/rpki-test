@@ -24,6 +24,7 @@ from run_validator import (  # noqa: E402
     parse_bytes,
     summarize_docker_stats,
     tcpdump_container_filter,
+    validator_config,
     write_cache_tree,
 )
 from summarize_network_packets import DNS_FIELDS, FIELDS as NETWORK_PACKET_FIELDS  # noqa: E402
@@ -93,12 +94,33 @@ class ConfigTests(unittest.TestCase):
         routinator = next(entry for entry in entries if entry["validator"] == "routinator")
         self.assertIn('--validation-threads="$RPKI_VALIDATOR_THREADS"', routinator["script"])
         self.assertNotIn("--complete", routinator["script"])
+        self.assertNotIn("--logfile", routinator["script"])
+        self.assertIn("2>&1", routinator["script"])
         rpki_client = next(entry for entry in entries if entry["validator"] == "rpki-client")
         self.assertEqual(rpki_client["id"], "rpki-client-9_8")
         self.assertEqual(rpki_client["version"], "9.8")
         self.assertIn("rpki-client-9.8.tar.gz", rpki_client["script"])
         self.assertIn("rpki-client-portable 9.8", rpki_client["script"])
         self.assertIn('rpki-client -j -p "$RPKI_VALIDATOR_THREADS"', rpki_client["script"])
+
+    def test_validator_config_records_cli_and_entry_settings(self) -> None:
+        entry = {
+            "id": "routinator-test",
+            "validator": "routinator",
+            "version": "test",
+            "label": "Routinator Test",
+            "image": "example/routinator@sha256:abc",
+            "timeout_seconds": 120,
+            "threads": 4,
+            "payloads": {"routeOrigins": True, "routerKeys": True, "aspas": True},
+            "script": "routinator vrps -f jsonext",
+        }
+        config = validator_config(entry, ["docker", "run", "example/routinator"])
+
+        self.assertEqual(config["timeoutSeconds"], 120)
+        self.assertEqual(config["threads"], 4)
+        self.assertEqual(config["script"], "routinator vrps -f jsonext")
+        self.assertEqual(config["dockerCommand"], ["docker", "run", "example/routinator"])
 
     def test_normalizes_raw_output_for_failed_validator_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -132,9 +154,10 @@ class ConfigTests(unittest.TestCase):
             }
 
             error = normalize_raw_output(raw_dir, output, entry, required=False)
+            normalized_exists = (output / "normalized.json").exists()
 
         self.assertIsNone(error)
-        self.assertFalse((output / "normalized.json").exists())
+        self.assertFalse(normalized_exists)
 
 
 class ResourceUsageTests(unittest.TestCase):
@@ -454,6 +477,13 @@ class AggregateTests(unittest.TestCase):
             self.assertEqual(manifest["latestRun"], "fixture-run")
             self.assertEqual(len(manifest["runs"]), 1)
             self.assertEqual(len(latest["entries"]), 2)
+            for entry in latest["entries"]:
+                self.assertIn("config", entry["paths"])
+                config_path = public / entry["paths"]["config"]
+                self.assertTrue(config_path.exists())
+                config = read_json(config_path)
+                self.assertEqual(config["id"], entry["id"])
+                self.assertIn("script", config)
             self.assertEqual(latest["reports"]["routeOrigins"]["totalObjects"], 2)
             self.assertEqual(latest["reports"]["routeOrigins"]["differingObjects"], 1)
             self.assertEqual(latest["reports"]["routeOrigins"]["includedRows"], 2)

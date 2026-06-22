@@ -92,6 +92,7 @@ function linkList(paths) {
   const downloads = document.createElement("div");
   downloads.className = "downloads";
   const visible = {
+    config: paths?.config,
     stdout: paths?.stdout,
     stderr: paths?.stderr,
     logs: paths?.logs,

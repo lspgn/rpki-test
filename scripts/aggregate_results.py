@@ -185,6 +185,7 @@ def copy_result(result_dir: Path, target_dir: Path) -> dict[str, Any]:
     target_dir.mkdir(parents=True, exist_ok=True)
     for name in (
         "status.json",
+        "config.json",
         "normalized.json",
         "stdout.log",
         "stderr.log",
@@ -228,6 +229,21 @@ def copy_result(result_dir: Path, target_dir: Path) -> dict[str, Any]:
         raw_out.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, raw_out / source.name)
     return read_json(target_dir / "status.json")
+
+
+def config_from_status(status: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": status["id"],
+        "validator": status["validator"],
+        "version": status["version"],
+        "label": status.get("label", status["id"]),
+        "image": status.get("image"),
+        "timeoutSeconds": status.get("timeoutSeconds"),
+        "threads": status.get("threads"),
+        "payloads": status.get("payloads", {}),
+        "unsupported": status.get("unsupported", []),
+        "script": status.get("command"),
+    }
 
 
 def empty_normalized(status: dict[str, Any]) -> dict[str, Any]:
@@ -492,6 +508,9 @@ def main() -> None:
         status = read_json(result_dir / "status.json")
         entry_dir = run_dir / status["id"]
         copied_status = copy_result(result_dir, entry_dir)
+        config_path = entry_dir / "config.json"
+        if not config_path.exists():
+            write_json(config_path, config_from_status(copied_status))
         normalized = load_normalized(entry_dir, copied_status)
         counts = payload_counts(normalized)
         raw_paths = [
@@ -584,6 +603,7 @@ def main() -> None:
                 "cacheTree": cache_tree_metadata,
                 "metrics": validator_metrics({**copied_status, "resourceUsage": load_resource_usage(entry_dir, copied_status)}, cache_tree_metadata),
                 "paths": {
+                    "config": f"data/runs/{run_id}/{copied_status['id']}/config.json",
                     "status": f"data/runs/{run_id}/{copied_status['id']}/status.json",
                     "normalized": f"data/runs/{run_id}/{copied_status['id']}/normalized.json",
                     "stdout": f"data/runs/{run_id}/{copied_status['id']}/stdout.log",

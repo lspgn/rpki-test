@@ -21,7 +21,7 @@
         "routerKeys": true,
         "aspas": true
       },
-      "script": "mkdir -p /work/cache /out/raw\nroutinator --repository-dir /work/cache/repository --enable-bgpsec --enable-aspa --validation-threads=\"$RPKI_VALIDATOR_THREADS\" -vv --log-repository-issues --logfile /out/routinator.log vrps -f jsonext -o /out/raw/routinator.json"
+      "script": "mkdir -p /work/cache /out/raw\nroutinator --repository-dir /work/cache/repository --enable-bgpsec --enable-aspa --validation-threads=\"$RPKI_VALIDATOR_THREADS\" -vv --log-repository-issues vrps -f jsonext -o /out/raw/routinator.json 2>&1"
     },
     {
       "id": "rpki-client-9_8",

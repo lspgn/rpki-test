@@ -675,6 +675,22 @@ def normalize_raw_output(raw_dir: Path, output_dir: Path, entry: dict[str, Any],
     return None
 
 
+def validator_config(entry: dict[str, Any], docker_command_value: list[str]) -> dict[str, Any]:
+    return {
+        "id": entry["id"],
+        "validator": entry["validator"],
+        "version": entry["version"],
+        "label": entry.get("label", entry["id"]),
+        "image": entry.get("image"),
+        "timeoutSeconds": entry.get("timeout_seconds"),
+        "threads": entry.get("threads"),
+        "payloads": entry.get("payloads", {}),
+        "unsupported": [name for name, supported in entry.get("payloads", {}).items() if supported is False],
+        "script": entry.get("script"),
+        "dockerCommand": docker_command_value,
+    }
+
+
 def prepare_output_dir(output_dir: Path) -> None:
     # Validator images may run as non-root users, so the bind-mounted /out tree
     # needs to be writable by more than the GitHub runner uid.
@@ -747,6 +763,7 @@ def main() -> None:
         prepare_output_dir(work_dir)
         container_name = f"rpki-{entry['id']}-{int(time.time())}"
         command = docker_command(entry, output_dir, work_dir, container_name)
+        write_json(output_dir / "config.json", validator_config(entry, command))
         stats_sampler = DockerStatsSampler(container_name)
         capture = ObservabilityCapture(container_name, output_dir, args.capture_observability)
         started_at = utc_now()
@@ -794,6 +811,8 @@ def main() -> None:
         "version": entry["version"],
         "label": entry.get("label", entry["id"]),
         "image": entry.get("image"),
+        "timeoutSeconds": entry.get("timeout_seconds"),
+        "threads": entry.get("threads"),
         "payloads": entry.get("payloads", {}),
         "unsupported": [name for name, supported in entry.get("payloads", {}).items() if supported is False],
         "startedAt": started_at,
