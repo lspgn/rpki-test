@@ -76,12 +76,20 @@
               <option value="missing">Missing count</option>
             </select>
           </label>
+          <label>
+            <span>Seen Filter</span>
+            <select id="resource-seen-filter">
+              <option value="all">All resources</option>
+              <option value="divergent">Differences only</option>
+            </select>
+          </label>
           <div class="pager">
             <button id="resource-prev" type="button">Prev</button>
             <span id="resource-page" class="muted"></span>
             <button id="resource-next" type="button">Next</button>
           </div>
         </div>
+        <p class="scope-note" id="resource-scope"></p>
         <div class="table-wrap">
           <table class="resources-table">
             <thead>
@@ -125,6 +133,7 @@
             <button id="file-next" type="button">Next</button>
           </div>
         </div>
+        <p class="scope-note" id="file-scope"></p>
         <div class="table-wrap">
           <table class="files-table">
             <thead>

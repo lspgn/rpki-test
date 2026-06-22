@@ -91,7 +91,14 @@ function renderMetrics(summary) {
 function linkList(paths) {
   const downloads = document.createElement("div");
   downloads.className = "downloads";
-  for (const [label, path] of Object.entries(paths || {})) {
+  const visible = {
+    stdout: paths?.stdout,
+    stderr: paths?.stderr,
+    logs: paths?.logs,
+    support: paths?.support,
+    status: paths?.status,
+  };
+  for (const [label, path] of Object.entries(visible)) {
     if (!path) {
       continue;
     }
@@ -189,17 +196,59 @@ function sortResources(rows, sort) {
   return sorted;
 }
 
+function renderSeenFilter() {
+  const select = document.querySelector("#resource-seen-filter");
+  const current = select.value || "all";
+  select.replaceChildren(
+    option("all", "All resources"),
+    option("divergent", "Differences only"),
+  );
+  if (resourceReport) {
+    for (const id of resourceReport.eligibleValidators || []) {
+      select.append(
+        option(`seen:${id}`, `Seen by ${id}`),
+        option(`missing:${id}`, `Missing from ${id}`),
+      );
+    }
+  }
+  select.value = [...select.options].some((item) => item.value === current) ? current : "all";
+}
+
+function option(value, label) {
+  const item = document.createElement("option");
+  item.value = value;
+  item.textContent = label;
+  return item;
+}
+
+function filterBySeen(rows, filter) {
+  if (filter === "divergent") {
+    return rows.filter((row) => row.divergent);
+  }
+  if (filter.startsWith("seen:")) {
+    const id = filter.slice("seen:".length);
+    return rows.filter((row) => (row.seenBy || []).includes(id));
+  }
+  if (filter.startsWith("missing:")) {
+    const id = filter.slice("missing:".length);
+    return rows.filter((row) => (row.missingFrom || []).includes(id));
+  }
+  return rows;
+}
+
 function renderResources() {
   const tbody = document.querySelector("#resources");
   if (!resourceReport) {
     tbody.replaceChildren(emptyRow(4, "Load a resource report to inspect objects."));
     document.querySelector("#resource-count").textContent = "";
     document.querySelector("#resource-page").textContent = "";
+    document.querySelector("#resource-scope").textContent = "";
     return;
   }
   const query = document.querySelector("#resource-search").value.trim().toLowerCase();
   const sort = document.querySelector("#resource-sort").value;
-  let rows = resourceRows;
+  const seenFilter = document.querySelector("#resource-seen-filter").value;
+  let rows = filterBySeen(resourceRows, seenFilter);
   if (query) {
     rows = rows.filter((row) => resourceText(row).includes(query));
   }
@@ -215,6 +264,9 @@ function renderResources() {
   document.querySelector("#resource-page").textContent = pages ? `${resourcePage + 1} / ${pages}` : "";
   document.querySelector("#resource-prev").disabled = resourcePage <= 0;
   document.querySelector("#resource-next").disabled = !pages || resourcePage >= pages - 1;
+  const loaded = (resourceReport.chunks || []).filter((chunk) => resourceChunkCache.has(chunk.path)).length;
+  document.querySelector("#resource-scope").textContent =
+    `Search, sort, and seen filters apply to the current page only. Loaded ${formatter.format(loaded)} of ${formatter.format(pages)} resource chunks.`;
   const fragment = document.createDocumentFragment();
   for (const item of shown) {
     const row = document.createElement("tr");
@@ -269,6 +321,7 @@ async function loadResourceReport() {
     resourceCache.set(reportPath, await fetchJson(reportPath));
   }
   resourceReport = resourceCache.get(reportPath);
+  renderSeenFilter();
   resourcePage = 0;
   await loadResourceChunk();
 }
@@ -309,6 +362,7 @@ function renderFiles() {
     tbody.replaceChildren(emptyRow(4, "Select a validator with a cache tree."));
     document.querySelector("#file-count").textContent = "";
     document.querySelector("#file-page").textContent = "";
+    document.querySelector("#file-scope").textContent = "";
     return;
   }
   const query = document.querySelector("#file-search").value.trim().toLowerCase();
@@ -325,6 +379,9 @@ function renderFiles() {
   document.querySelector("#file-page").textContent = pages ? `${filePage + 1} / ${pages}` : "";
   document.querySelector("#file-prev").disabled = filePage <= 0;
   document.querySelector("#file-next").disabled = !pages || filePage >= pages - 1;
+  const loaded = (fileTree.chunks || []).filter((chunk) => fileChunkCache.has(chunk.path)).length;
+  document.querySelector("#file-scope").textContent =
+    `Search and sort apply to the current page only. Loaded ${formatter.format(loaded)} of ${formatter.format(pages)} file chunks.`;
   const fragment = document.createDocumentFragment();
   for (const file of shown) {
     const row = document.createElement("tr");
@@ -447,6 +504,7 @@ function setupControls() {
   });
   document.querySelector("#resource-search").addEventListener("input", renderResources);
   document.querySelector("#resource-sort").addEventListener("change", renderResources);
+  document.querySelector("#resource-seen-filter").addEventListener("change", renderResources);
   document.querySelector("#resource-prev").addEventListener("click", () => {
     resourcePage = Math.max(0, resourcePage - 1);
     loadResourceChunk().catch(showError);
