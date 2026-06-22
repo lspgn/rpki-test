@@ -583,7 +583,7 @@ def run_with_tee(
     timeout: int,
     sampler: DockerStatsSampler | None = None,
     capture: ObservabilityCapture | None = None,
-) -> tuple[int, str, str, bool]:
+) -> tuple[int, str, str, bool, list[dict[str, Any]]]:
     print("::group::Validator command", flush=True)
     print(" ".join(shlex.quote(part) for part in command), flush=True)
     print("::endgroup::", flush=True)
@@ -597,18 +597,32 @@ def run_with_tee(
     )
     stdout_chunks: list[str] = []
     stderr_chunks: list[str] = []
+    log_events: list[dict[str, Any]] = []
+    log_lock = threading.Lock()
+    started_at = time.monotonic()
 
-    def reader(stream: Any, target: Any, chunks: list[str]) -> None:
+    def reader(stream: Any, target: Any, chunks: list[str], stream_name: str) -> None:
         try:
             for line in stream:
+                observed_at = utc_now()
+                offset = round(time.monotonic() - started_at, 3)
                 chunks.append(line)
+                with log_lock:
+                    log_events.append(
+                        {
+                            "stream": stream_name,
+                            "observedAt": observed_at,
+                            "offsetSeconds": offset,
+                            "message": line.rstrip("\n"),
+                        }
+                    )
                 target.write(line)
                 target.flush()
         finally:
             stream.close()
 
-    stdout_thread = threading.Thread(target=reader, args=(process.stdout, sys.stdout, stdout_chunks))
-    stderr_thread = threading.Thread(target=reader, args=(process.stderr, sys.stderr, stderr_chunks))
+    stdout_thread = threading.Thread(target=reader, args=(process.stdout, sys.stdout, stdout_chunks, "stdout"))
+    stderr_thread = threading.Thread(target=reader, args=(process.stderr, sys.stderr, stderr_chunks, "stderr"))
     stdout_thread.start()
     stderr_thread.start()
     if sampler is not None:
@@ -630,6 +644,14 @@ def run_with_tee(
         process.wait()
         timeout_line = f"\nTimed out after {timeout} seconds.\n"
         stderr_chunks.append(timeout_line)
+        log_events.append(
+            {
+                "stream": "stderr",
+                "observedAt": utc_now(),
+                "offsetSeconds": round(time.monotonic() - started_at, 3),
+                "message": timeout_line.strip(),
+            }
+        )
         sys.stderr.write(timeout_line)
         sys.stderr.flush()
 
@@ -643,7 +665,8 @@ def run_with_tee(
         except Exception as exc:  # noqa: BLE001 - observability must not change validator behavior.
             capture.errors.append(f"capture stop: {exc}")
             capture.log(f"capture stop failed: {exc}")
-    return returncode, "".join(stdout_chunks), "".join(stderr_chunks), timed_out
+    log_events.sort(key=lambda item: (item.get("offsetSeconds", 0), item.get("stream", "")))
+    return returncode, "".join(stdout_chunks), "".join(stderr_chunks), timed_out, log_events
 
 
 def run_quiet(command: list[str], timeout: int) -> tuple[int, str]:
@@ -768,7 +791,7 @@ def main() -> None:
         capture = ObservabilityCapture(container_name, output_dir, args.capture_observability)
         started_at = utc_now()
         started = time.monotonic()
-        returncode, stdout, stderr, timed_out = run_with_tee(
+        returncode, stdout, stderr, timed_out, log_events = run_with_tee(
             command,
             int(entry.get("timeout_seconds", 7200)),
             stats_sampler,
@@ -798,6 +821,7 @@ def main() -> None:
     duration = round(time.monotonic() - started, 3)
     (output_dir / "stdout.log").write_text(stdout, encoding="utf-8")
     (output_dir / "stderr.log").write_text(stderr, encoding="utf-8")
+    write_json(output_dir / "log-events.json", log_events)
 
     normalization_error = normalize_raw_output(raw_dir, output_dir, entry, required=returncode == 0)
     if normalization_error is not None and returncode == 0:

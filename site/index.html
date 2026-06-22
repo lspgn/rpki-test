@@ -47,6 +47,21 @@
             <tbody id="validators"></tbody>
           </table>
         </div>
+        <section class="timeline" aria-label="Validator timeline">
+          <div class="section-head">
+            <h2>Timelines</h2>
+            <span class="muted" id="timeline-summary"></span>
+          </div>
+          <div class="timeline-controls" aria-label="Timeline series">
+            <label><input type="checkbox" data-timeline-series="cpu" checked> CPU</label>
+            <label><input type="checkbox" data-timeline-series="memory" checked> Memory</label>
+            <label><input type="checkbox" data-timeline-series="network" checked> Network</label>
+            <label><input type="checkbox" data-timeline-series="disk" checked> Disk</label>
+            <label><input type="checkbox" data-timeline-series="pids" checked> Processes</label>
+          </div>
+          <div class="timeline-list" id="timelines"></div>
+          <div class="timeline-tooltip" id="timeline-tooltip" role="status"></div>
+        </section>
       </section>
 
       <section class="view" id="resources-view">

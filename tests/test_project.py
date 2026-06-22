@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from aggregate_results import cache_tree_from_archive, main as aggregate_main, source_files  # noqa: E402
+from aggregate_results import build_timeline, cache_tree_from_archive, main as aggregate_main, source_files  # noqa: E402
 from check_observability_tools import collect_tooling_status  # noqa: E402
 from rpki_project import load_config, normalize_payloads, payload_counts, read_json, validators, write_json  # noqa: E402
 from run_validator import (  # noqa: E402
@@ -271,6 +271,137 @@ class NetworkFlowSummaryTests(unittest.TestCase):
         self.assertEqual(dns_flow["directDnsNames"], ["example.net"])
 
 
+class TimelineTests(unittest.TestCase):
+    def test_build_timeline_buckets_resources_events_dns_and_flows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ebpf = root / "ebpf"
+            ebpf.mkdir()
+            status = {
+                "startedAt": "2026-06-22T00:00:00Z",
+                "finishedAt": "2026-06-22T00:00:24Z",
+                "durationSeconds": 24,
+            }
+            samples = [
+                {
+                    "_observedAt": "2026-06-22T00:00:01Z",
+                    "CPUPerc": "50.00%",
+                    "MemUsage": "128MiB / 2GiB",
+                    "NetIO": "100B / 200B",
+                    "PIDs": "4",
+                },
+                {
+                    "_observedAt": "2026-06-22T00:00:11Z",
+                    "CPUPerc": "150.00%",
+                    "MemUsage": "256MiB / 2GiB",
+                    "NetIO": "1100B / 2200B",
+                    "PIDs": "8",
+                },
+            ]
+            (root / "docker-stats.jsonl").write_text(
+                "\n".join(json.dumps(sample) for sample in samples) + "\n",
+                encoding="utf-8",
+            )
+            write_json(
+                root / "log-events.json",
+                [
+                    {
+                        "stream": "stdout",
+                        "observedAt": "2026-06-22T00:00:04Z",
+                        "offsetSeconds": 4,
+                        "message": "started",
+                    },
+                    {
+                        "stream": "stderr",
+                        "observedAt": "2026-06-22T00:00:12Z",
+                        "offsetSeconds": 12,
+                        "message": "warning",
+                    },
+                ],
+            )
+            (ebpf / "dns-queries.tsv").write_text(
+                "\t".join(DNS_FIELDS)
+                + "\n"
+                + "1782086403.0\t192.0.2.53\t172.17.0.2\t53\t50000\trepo.example.net\t203.0.113.10\t\tcdn.example.net\n",
+                encoding="utf-8",
+            )
+            write_json(
+                ebpf / "network-flows.json",
+                {
+                    "flows": [
+                        {
+                            "protocol": "TCP",
+                            "remoteAddress": "203.0.113.10",
+                            "remotePort": 443,
+                            "dnsNames": ["repo.example.net"],
+                            "totalRxBytes": 1000,
+                            "totalTxBytes": 500,
+                            "packetCount": 2,
+                            "firstSeenEpoch": 1782086405.0,
+                            "lastSeenEpoch": 1782086407.5,
+                            "samples": [
+                                {
+                                    "startOffsetSeconds": 0,
+                                    "rxBytes": 1000,
+                                    "txBytes": 500,
+                                    "rxBps": 1000,
+                                    "txBps": 500,
+                                    "packetCount": 2,
+                                }
+                            ],
+                        },
+                        {
+                            "protocol": "TCP",
+                            "remoteAddress": "203.0.113.20",
+                            "remotePort": 443,
+                            "dnsNames": ["late.example.net"],
+                            "totalRxBytes": 700,
+                            "totalTxBytes": 300,
+                            "packetCount": 2,
+                            "firstSeenEpoch": 1782086420.0,
+                            "lastSeenEpoch": 1782086421.0,
+                            "samples": [
+                                {
+                                    "startOffsetSeconds": 16,
+                                    "rxBytes": 700,
+                                    "txBytes": 300,
+                                    "rxBps": 700,
+                                    "txBps": 300,
+                                    "packetCount": 2,
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
+
+            timeline = build_timeline(root, status, {"size": 4096})
+
+        self.assertEqual(timeline["bucketSeconds"], 10.0)
+        self.assertEqual(timeline["buckets"][0]["cpuPercent"], 50)
+        self.assertEqual(timeline["buckets"][0]["memoryBytes"], 134217728)
+        self.assertEqual(timeline["buckets"][0]["diskBytes"], 4096)
+        self.assertEqual(timeline["buckets"][0]["stdoutCount"], 1)
+        self.assertEqual(timeline["buckets"][0]["dnsQueryCount"], 1)
+        self.assertEqual(timeline["buckets"][0]["flowCount"], 1)
+        self.assertEqual(timeline["buckets"][1]["networkRxBps"], 100)
+        self.assertEqual(timeline["buckets"][1]["networkTxBps"], 200)
+        self.assertEqual(timeline["buckets"][1]["pids"], 8)
+        self.assertEqual(timeline["buckets"][1]["stderrCount"], 1)
+        self.assertEqual(timeline["events"][0]["message"], "started")
+        self.assertEqual(timeline["network"]["dnsQueries"][0]["query"], "repo.example.net")
+        self.assertEqual(timeline["network"]["dnsQueries"][0]["answers"], ["203.0.113.10", "cdn.example.net"])
+        self.assertEqual(timeline["network"]["flows"][0]["dnsNames"], ["repo.example.net"])
+        self.assertEqual(timeline["network"]["flows"][0]["firstSeenOffsetSeconds"], 5)
+        self.assertEqual(timeline["network"]["flows"][0]["lastSeenOffsetSeconds"], 7.5)
+        late_flow = next(flow for flow in timeline["network"]["flows"] if flow["remoteAddress"] == "203.0.113.20")
+        self.assertEqual(late_flow["firstSeenOffsetSeconds"], 20)
+        self.assertEqual(late_flow["samples"][0]["offsetSeconds"], 21)
+        late_bucket = next(bucket for bucket in timeline["buckets"] if bucket["startOffsetSeconds"] == 20)
+        self.assertEqual(late_bucket["flowRxBytes"], 700)
+        self.assertEqual(late_bucket["flowTxBytes"], 300)
+
+
 class ObservabilityToolingTests(unittest.TestCase):
     def test_collect_tooling_status_reports_required_commands(self) -> None:
         status = collect_tooling_status()
@@ -413,6 +544,8 @@ class AggregateTests(unittest.TestCase):
                     "label": entry_id,
                     "success": True,
                     "exitCode": 0,
+                    "startedAt": "2026-06-22T00:00:00Z",
+                    "finishedAt": "2026-06-22T00:00:12Z",
                     "durationSeconds": 1,
                     "resourceUsage": {
                         "peakProcessorCores": 1.25,
@@ -431,7 +564,23 @@ class AggregateTests(unittest.TestCase):
                 write_json(out / "normalized.json", normalized)
                 compress_raw_files(raw_dir)
                 write_json(out / "resource-usage.json", status["resourceUsage"])
-                (out / "docker-stats.jsonl").write_text("", encoding="utf-8")
+                write_json(
+                    out / "log-events.json",
+                    [{"stream": "stdout", "observedAt": "2026-06-22T00:00:01Z", "offsetSeconds": 1, "message": "ok"}],
+                )
+                (out / "docker-stats.jsonl").write_text(
+                    json.dumps(
+                        {
+                            "_observedAt": "2026-06-22T00:00:01Z",
+                            "CPUPerc": "10.00%",
+                            "MemUsage": "64MiB / 2GiB",
+                            "NetIO": "100B / 200B",
+                            "PIDs": "2",
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
                 ebpf_dir = out / "ebpf"
                 ebpf_dir.mkdir()
                 write_json(ebpf_dir / "tooling.json", {"canAttemptCapture": False})
@@ -440,8 +589,32 @@ class AggregateTests(unittest.TestCase):
                 (ebpf_dir / "capture.log").write_text("capture finished\n", encoding="utf-8")
                 (ebpf_dir / "tcpdump.log").write_text("1 packet captured\n", encoding="utf-8")
                 (ebpf_dir / "network-tcpdump.log").write_text("2 packets captured\n", encoding="utf-8")
-                (ebpf_dir / "dns-queries.tsv").write_text("time\tsrc\tdst\tquery\n", encoding="utf-8")
-                write_json(ebpf_dir / "network-flows.json", {"flowCount": 1, "flows": []})
+                (ebpf_dir / "dns-queries.tsv").write_text(
+                    "\t".join(DNS_FIELDS)
+                    + "\n"
+                    + "1782086401.0\t192.0.2.53\t172.17.0.2\t53\t50000\trepo.example.net\t203.0.113.10\t\t\n",
+                    encoding="utf-8",
+                )
+                write_json(
+                    ebpf_dir / "network-flows.json",
+                    {
+                        "flowCount": 1,
+                        "flows": [
+                            {
+                                "protocol": "TCP",
+                                "remoteAddress": "203.0.113.10",
+                                "remotePort": 443,
+                                "dnsNames": ["repo.example.net"],
+                                "totalRxBytes": 1000,
+                                "totalTxBytes": 500,
+                                "packetCount": 2,
+                                "firstSeenEpoch": 1782086402.0,
+                                "lastSeenEpoch": 1782086404.0,
+                                "samples": [{"startOffsetSeconds": 0, "rxBytes": 1000, "txBytes": 500}],
+                            }
+                        ],
+                    },
+                )
                 (ebpf_dir / "tcp-bps.log").write_text("127.0.0.1:443 1024\n", encoding="utf-8")
                 write_json(ebpf_dir / "tcp-flows.json", {"flowCount": 1, "flows": []})
                 (ebpf_dir / "syscalls.log").write_text("syscall count\n", encoding="utf-8")
@@ -496,8 +669,18 @@ class AggregateTests(unittest.TestCase):
             self.assertTrue((public / "data/runs/fixture-run/routinator-test/raw/raw.json.gz").exists())
             self.assertFalse((public / "data/runs/fixture-run/routinator-test/raw/raw.json").exists())
             self.assertEqual(latest["entries"][0]["resourceUsage"]["peakProcessorCores"], 1.25)
+            self.assertIn("timeline", latest["entries"][0]["paths"])
+            timeline_path = public / latest["entries"][0]["paths"]["timeline"]
+            self.assertTrue(timeline_path.exists())
+            timeline = read_json(timeline_path)
+            self.assertIn("network", timeline)
+            self.assertEqual(timeline["events"][0]["message"], "ok")
+            self.assertEqual(timeline["network"]["dnsQueries"][0]["query"], "repo.example.net")
+            self.assertEqual(timeline["network"]["flows"][0]["remoteAddress"], "203.0.113.10")
             observability = latest["entries"][0]["paths"]["observability"]
+            self.assertTrue(any(path.endswith("timeline.json") for path in observability))
             self.assertTrue(any(path.endswith("resource-usage.json") for path in observability))
+            self.assertTrue(any(path.endswith("log-events.json") for path in observability))
             self.assertTrue(any(path.endswith("ebpf/tooling.json") for path in observability))
             self.assertTrue(any(path.endswith("ebpf/tooling.log") for path in observability))
             self.assertTrue(any(path.endswith("ebpf/capture-status.json") for path in observability))
