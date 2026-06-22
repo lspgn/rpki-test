@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from aggregate_results import main as aggregate_main  # noqa: E402
 from rpki_project import load_config, normalize_payloads, payload_counts, read_json, validators, write_json  # noqa: E402
+from run_validator import archive_work_dir  # noqa: E402
 
 
 class NormalizationTests(unittest.TestCase):
@@ -124,6 +125,23 @@ class AggregateTests(unittest.TestCase):
             self.assertEqual(manifest["latestRun"], "fixture-run")
             self.assertEqual(len(latest["entries"]), 2)
             self.assertTrue((public / "index.html").exists())
+
+
+class ArchiveTests(unittest.TestCase):
+    def test_work_cache_archive_uses_safe_artifact_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work = root / "work"
+            output = root / "out"
+            colon_path = work / "cache/repository/ripe-ncc.tal/https/krill.ipgua.com:3030/rrdp"
+            colon_path.mkdir(parents=True)
+            (colon_path / "notification.xml").write_text("<notification />", encoding="utf-8")
+
+            archives = archive_work_dir(work, output)
+
+            self.assertEqual(archives[0]["path"], "archives/work-cache.tar.gz")
+            self.assertTrue((output / "archives/work-cache.tar.gz").exists())
+            self.assertNotIn(":", archives[0]["path"])
 
 
 if __name__ == "__main__":

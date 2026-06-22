@@ -46,7 +46,14 @@ jobs:
         if: always()
         with:
           name: validator-${{ matrix.id }}
-          path: out/${{ matrix.id }}
+          path: |
+            out/${{ matrix.id }}/status.json
+            out/${{ matrix.id }}/stdout.log
+            out/${{ matrix.id }}/stderr.log
+            out/${{ matrix.id }}/normalized.json
+            out/${{ matrix.id }}/raw/*.json
+            out/${{ matrix.id }}/raw/*.json.gz
+            out/${{ matrix.id }}/archives/*.tar.gz
           if-no-files-found: error
           retention-days: 7
 

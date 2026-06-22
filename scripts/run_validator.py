@@ -8,6 +8,8 @@ import json
 import shlex
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -25,7 +27,7 @@ from rpki_project import (
 )
 
 
-def docker_command(entry: dict[str, Any], output_dir: Path) -> list[str]:
+def docker_command(entry: dict[str, Any], output_dir: Path, work_dir: Path) -> list[str]:
     return [
         "docker",
         "run",
@@ -34,6 +36,8 @@ def docker_command(entry: dict[str, Any], output_dir: Path) -> list[str]:
         "/bin/sh",
         "-v",
         f"{output_dir.resolve()}:/out",
+        "-v",
+        f"{work_dir.resolve()}:/work",
         entry["image"],
         "-lc",
         entry["script"],
@@ -102,6 +106,29 @@ def prepare_output_dir(output_dir: Path) -> None:
             path.chmod(0o777)
 
 
+def archive_work_dir(work_dir: Path, output_dir: Path) -> list[dict[str, Any]]:
+    archive_dir = output_dir / "archives"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = archive_dir / "work-cache.tar.gz"
+    for path in [work_dir, *work_dir.rglob("*")]:
+        if path.is_dir():
+            path.chmod(0o777)
+        elif path.is_file():
+            path.chmod(0o666)
+    with tarfile.open(archive_path, "w:gz") as tar:
+        for name in ("cache", "tals"):
+            source = work_dir / name
+            if source.exists():
+                tar.add(source, arcname=name)
+    return [
+        {
+            "path": "archives/work-cache.tar.gz",
+            "size": archive_path.stat().st_size,
+            "sha256": sha256_file(archive_path),
+        }
+    ]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="validators.yml")
@@ -116,10 +143,14 @@ def main() -> None:
     raw_dir.mkdir(parents=True, exist_ok=True)
     prepare_output_dir(output_dir)
 
-    command = docker_command(entry, output_dir)
-    started_at = utc_now()
-    started = time.monotonic()
-    returncode, stdout, stderr, timed_out = run_with_tee(command, int(entry.get("timeout_seconds", 7200)))
+    with tempfile.TemporaryDirectory(prefix=f"rpki-{entry['id']}-") as work:
+        work_dir = Path(work)
+        prepare_output_dir(work_dir)
+        command = docker_command(entry, output_dir, work_dir)
+        started_at = utc_now()
+        started = time.monotonic()
+        returncode, stdout, stderr, timed_out = run_with_tee(command, int(entry.get("timeout_seconds", 7200)))
+        archives = archive_work_dir(work_dir, output_dir)
 
     finished_at = utc_now()
     duration = round(time.monotonic() - started, 3)
@@ -168,6 +199,7 @@ def main() -> None:
         "success": returncode == 0,
         "command": entry.get("script"),
         "rawFiles": raw_files,
+        "archives": archives,
         "normalizationError": normalization_error,
     }
     write_json(output_dir / "status.json", status)
