@@ -765,28 +765,6 @@ function renderTimelineChart(svg, timeline, entry) {
     svg.append(hover);
   });
 
-  const markerGroup = svgElement("g", { class: "timeline-markers" });
-  for (const group of groupedByBucket(events, bucketSeconds, (event) => event.offsetSeconds).slice(0, 160)) {
-    const x = xForOffset(group.offsetSeconds + bucketSeconds / 2);
-    const dot = svgElement("circle", { cx: x, cy: logTop - 5, r: Math.min(8, 3 + Math.sqrt(group.values.length)), class: "event-dot logs" });
-    addTooltipHandlers(dot, eventLines(group));
-    markerGroup.append(dot);
-  }
-  for (const group of groupedByBucket(dnsQueries, bucketSeconds, (query) => query.offsetSeconds).slice(0, 160)) {
-    const x = xForOffset(group.offsetSeconds + bucketSeconds / 2);
-    const dot = svgElement("rect", {
-      x: x - Math.min(8, 3 + Math.sqrt(group.values.length)),
-      y: dnsTop - 18,
-      width: Math.min(16, 6 + Math.sqrt(group.values.length) * 2),
-      height: Math.min(16, 6 + Math.sqrt(group.values.length) * 2),
-      rx: 2,
-      class: "event-dot dns",
-    });
-    addTooltipHandlers(dot, dnsLines(group));
-    markerGroup.append(dot);
-  }
-  svg.append(markerGroup);
-
   svg.append(svgElement("line", { x1: left, x2: left, y1: flowTop, y2: height - 24, class: "axis" }));
 }
 

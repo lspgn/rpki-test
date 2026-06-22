@@ -494,20 +494,6 @@ a:hover {
   pointer-events: all;
 }
 
-.event-dot {
-  stroke: white;
-  stroke-width: 1.5;
-  cursor: help;
-}
-
-.event-dot.logs {
-  fill: var(--accent);
-}
-
-.event-dot.dns {
-  fill: #6f5fb8;
-}
-
 .timeline-tooltip {
   position: fixed;
   z-index: 20;
