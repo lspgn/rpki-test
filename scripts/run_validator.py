@@ -12,6 +12,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -116,6 +117,10 @@ def run_quiet(command: list[str], timeout: int) -> tuple[int, str]:
     return completed.returncode, output
 
 
+def normalize_permissions(entry: dict[str, Any], output_dir: Path, work_dir: Path) -> tuple[int, str]:
+    return run_quiet(permission_command(entry, output_dir, work_dir), 300)
+
+
 def read_raw_json(raw_dir: Path) -> list[Any]:
     values = []
     for path in sorted(raw_dir.glob("*.json")):
@@ -163,20 +168,32 @@ def main() -> None:
     raw_dir.mkdir(parents=True, exist_ok=True)
     prepare_output_dir(output_dir)
 
-    with tempfile.TemporaryDirectory(prefix=f"rpki-{entry['id']}-") as work:
-        work_dir = Path(work)
+    work_dir = Path(tempfile.mkdtemp(prefix=f"rpki-{entry['id']}-"))
+    archives: list[dict[str, Any]] = []
+    try:
         prepare_output_dir(work_dir)
         command = docker_command(entry, output_dir, work_dir)
         started_at = utc_now()
         started = time.monotonic()
         returncode, stdout, stderr, timed_out = run_with_tee(command, int(entry.get("timeout_seconds", 7200)))
-        permission_returncode, permission_output = run_quiet(permission_command(entry, output_dir, work_dir), 300)
+        permission_returncode, permission_output = normalize_permissions(entry, output_dir, work_dir)
         if permission_output:
             stderr += "\n::permission-normalization::\n" + permission_output
         if permission_returncode != 0 and returncode == 0:
             returncode = permission_returncode
             stderr += "\nPermission normalization failed before cache archiving.\n"
-        archives = archive_work_dir(work_dir, output_dir)
+        if permission_returncode == 0:
+            try:
+                archives = archive_work_dir(work_dir, output_dir)
+            except Exception as exc:  # noqa: BLE001 - keep validator status artifacts on archive failures.
+                stderr += f"\nCache archive failed: {exc}\n"
+                if returncode == 0:
+                    returncode = 66
+        else:
+            stderr += "\nCache archive skipped because permission normalization failed.\n"
+    finally:
+        normalize_permissions(entry, output_dir, work_dir)
+        shutil.rmtree(work_dir, ignore_errors=True)
 
     finished_at = utc_now()
     duration = round(time.monotonic() - started, 3)
