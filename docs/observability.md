@@ -17,9 +17,10 @@ entry and publishes these artifacts:
 - `ebpf/syscalls.log` and `ebpf/memory-allocations.log`: syscall and allocation traces, when collected
 
 The dashboard surfaces peak processor cores and peak RAM for each validator,
-plus a per-validator timeline below the validator table. The timeline uses
-`timeline.json` as its single browser-facing source for resource graphs, log
-annotations, DNS queries, and network flows.
+plus one timeline chart per validator below the validator table. Each chart
+uses `timeline.json` as its browser-facing source for resource graphs,
+Gantt-style network-flow overlays, DNS labels, and hoverable stdout/stderr
+event dots.
 Use `resource-usage.json` as the sizing input for routine capacity planning:
 
 - `peakMemoryBytes`: minimum RAM headroom for the observed run

@@ -338,6 +338,7 @@ class TimelineTests(unittest.TestCase):
                             "totalTxBytes": 500,
                             "packetCount": 2,
                             "firstSeenEpoch": 1782086405.0,
+                            "lastSeenEpoch": 1782086407.5,
                             "samples": [
                                 {
                                     "startOffsetSeconds": 0,
@@ -370,6 +371,8 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(timeline["network"]["dnsQueries"][0]["query"], "repo.example.net")
         self.assertEqual(timeline["network"]["dnsQueries"][0]["answers"], ["203.0.113.10", "cdn.example.net"])
         self.assertEqual(timeline["network"]["flows"][0]["dnsNames"], ["repo.example.net"])
+        self.assertEqual(timeline["network"]["flows"][0]["firstSeenOffsetSeconds"], 5)
+        self.assertEqual(timeline["network"]["flows"][0]["lastSeenOffsetSeconds"], 7.5)
 
 
 class ObservabilityToolingTests(unittest.TestCase):
@@ -579,6 +582,7 @@ class AggregateTests(unittest.TestCase):
                                 "totalTxBytes": 500,
                                 "packetCount": 2,
                                 "firstSeenEpoch": 1782086402.0,
+                                "lastSeenEpoch": 1782086404.0,
                                 "samples": [{"startOffsetSeconds": 0, "rxBytes": 1000, "txBytes": 500}],
                             }
                         ],

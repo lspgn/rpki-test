@@ -41,7 +41,7 @@ History retention is disabled while the artifact set is kept lightweight. Raw va
 
 ## Observability
 
-Each validator run samples `docker stats` and calculates peak RAM, peak CPU cores, mean CPU cores, and mean network throughput. The dashboard shows the peak CPU/RAM values per validator and a selectable 10 second timeline with resource graphs, stdout/stderr annotations, DNS queries, and network flows.
+Each validator run samples `docker stats` and calculates peak RAM, peak CPU cores, mean CPU cores, and mean network throughput. The dashboard shows the peak CPU/RAM values per validator plus one timeline chart per validator, with resource graphs, hoverable stdout/stderr annotations, DNS labels, and Gantt-style network-flow overlays.
 
 See `docs/observability.md` for the optional privileged eBPF workflow covering DNS capture, per-IP/port throughput, syscall counts, and allocation tracing.
 

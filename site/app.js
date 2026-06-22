@@ -17,14 +17,13 @@ let fileTree = null;
 let fileRows = [];
 let filePage = 0;
 let fileValidator = null;
-let timelineValidator = null;
-let timelineData = null;
 let timeRefreshTimer = null;
 const resourceCache = new Map();
 const resourceChunkCache = new Map();
 const fileCache = new Map();
 const fileChunkCache = new Map();
 const timelineCache = new Map();
+const timelineByValidator = new Map();
 
 const formatter = new Intl.NumberFormat();
 const byteFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
@@ -107,11 +106,6 @@ function formatOffset(seconds) {
   const minutes = Math.floor(seconds / 60);
   const remaining = Math.floor(seconds % 60);
   return `${minutes}:${String(remaining).padStart(2, "0")}`;
-}
-
-function timelineBucketLabel(offset, bucketSeconds) {
-  const index = Math.floor((offset || 0) / (bucketSeconds || 10));
-  return `${formatOffset(index * (bucketSeconds || 10))}-${formatOffset((index + 1) * (bucketSeconds || 10))}`;
 }
 
 function metric(label, value) {
@@ -197,7 +191,7 @@ function selectedTimelineSeries() {
     .map((input) => input.dataset.timelineSeries);
 }
 
-function timelineSeriesConfig() {
+function timelineSeriesConfig(bucketSeconds) {
   return {
     cpu: {
       label: "CPU",
@@ -216,7 +210,7 @@ function timelineSeriesConfig() {
       color: "#b65c27",
       value: (bucket) => {
         const docker = (bucket.networkRxBps || 0) + (bucket.networkTxBps || 0);
-        const packet = ((bucket.flowRxBytes || 0) + (bucket.flowTxBytes || 0)) / (timelineData?.bucketSeconds || 10);
+        const packet = ((bucket.flowRxBytes || 0) + (bucket.flowTxBytes || 0)) / (bucketSeconds || 10);
         return docker || packet || null;
       },
       format: formatRate,
@@ -248,45 +242,92 @@ function linePath(points) {
   return points.map((point, index) => `${index ? "L" : "M"}${point[0].toFixed(1)},${point[1].toFixed(1)}`).join(" ");
 }
 
-function renderTimelineChart(timeline) {
-  const svg = document.querySelector("#timeline-chart");
+function timelineDuration(timeline) {
+  const buckets = timeline?.buckets || [];
+  const flows = timeline?.network?.flows || [];
+  const events = timeline?.events || [];
+  return Math.max(
+    timeline?.durationSeconds || 0,
+    ...buckets.map((bucket) => bucket.endOffsetSeconds || 0),
+    ...flows.map((flow) => flow.lastSeenOffsetSeconds || flow.firstSeenOffsetSeconds || 0),
+    ...events.map((event) => event.offsetSeconds || 0),
+    timeline?.bucketSeconds || 10,
+  );
+}
+
+function flowLabel(flow) {
+  const remote = `${flow.protocol || "IP"} ${flow.remoteAddress || "unknown"}${flow.remotePort ? `:${flow.remotePort}` : ""}`;
+  const names = (flow.dnsNames || []).join(", ");
+  return names ? `${remote} ${names}` : remote;
+}
+
+function renderTimelineChart(svg, timeline, entry) {
   svg.replaceChildren();
   const buckets = timeline?.buckets || [];
-  if (!buckets.length) {
-    svg.setAttribute("viewBox", "0 0 900 120");
+  const flows = timeline?.network?.flows || [];
+  const events = timeline?.events || [];
+  if (!buckets.length && !flows.length && !events.length) {
+    svg.setAttribute("viewBox", "0 0 980 120");
     svg.append(svgElement("text", { x: 24, y: 64, class: "timeline-empty" }));
     svg.lastElementChild.textContent = "No timeline samples";
     return;
   }
 
-  const configs = timelineSeriesConfig();
+  const bucketSeconds = timeline?.bucketSeconds || 10;
+  const configs = timelineSeriesConfig(bucketSeconds);
   const enabled = selectedTimelineSeries().filter((key) => configs[key]);
   const lanes = enabled.length ? enabled : ["cpu"];
   const width = 980;
   const left = 112;
   const right = 24;
   const top = 24;
+  const flowTop = top + 12;
+  const flowHeight = flows.length ? Math.min(74, Math.max(30, flows.slice(0, 8).length * 9 + 16)) : 28;
+  const laneTop = flowTop + flowHeight + 22;
   const laneHeight = 66;
-  const height = top + laneHeight * lanes.length + 32;
+  const height = laneTop + laneHeight * lanes.length + 34;
   const plotWidth = width - left - right;
-  const duration = Math.max(
-    timeline.durationSeconds || 0,
-    ...buckets.map((bucket) => bucket.endOffsetSeconds || 0),
-    timeline.bucketSeconds || 10,
-  );
+  const duration = timelineDuration(timeline);
+  const xForOffset = (offset) => left + (Math.max(0, offset || 0) / duration) * plotWidth;
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.style.minHeight = `${height}px`;
 
-  const markerGroup = svgElement("g", { class: "timeline-markers" });
-  for (const event of (timeline.events || []).slice(0, 300)) {
-    const x = left + ((event.offsetSeconds || 0) / duration) * plotWidth;
-    markerGroup.append(svgElement("line", { x1: x, x2: x, y1: top - 6, y2: height - 24, class: `event-marker ${event.stream}` }));
+  const title = svgElement("text", { x: 18, y: 18, class: "timeline-card-title" });
+  title.textContent = entry?.label || "Validator";
+  svg.append(title);
+
+  const flowLabelNode = svgElement("text", { x: 18, y: flowTop + 17, class: "lane-label" });
+  flowLabelNode.textContent = "Flows";
+  svg.append(flowLabelNode);
+  svg.append(svgElement("rect", { x: left, y: flowTop, width: plotWidth, height: flowHeight, class: "flow-lane" }));
+  flows.slice(0, 8).forEach((flow, index) => {
+    const y = flowTop + 10 + index * 9;
+    const start = flow.firstSeenOffsetSeconds || 0;
+    const end = Math.max(flow.lastSeenOffsetSeconds || start, start + 0.6);
+    const x = xForOffset(start);
+    const barWidth = Math.max(3, xForOffset(end) - x);
+    const bar = svgElement("rect", {
+      x,
+      y,
+      width: barWidth,
+      height: 6,
+      rx: 2,
+      class: "flow-bar",
+    });
+    const hover = svgElement("title");
+    hover.textContent = `${flowLabel(flow)}\n${formatOffset(start)}-${formatOffset(end)}\nRX/TX ${formatBytes(flow.totalRxBytes)} / ${formatBytes(flow.totalTxBytes)}`;
+    bar.append(hover);
+    svg.append(bar);
+  });
+  if (flows.length > 8) {
+    const more = svgElement("text", { x: left, y: flowTop + flowHeight - 4, class: "lane-max" });
+    more.textContent = `+${formatter.format(flows.length - 8)} more flows`;
+    svg.append(more);
   }
-  svg.append(markerGroup);
 
   lanes.forEach((key, laneIndex) => {
     const config = configs[key];
-    const yTop = top + laneIndex * laneHeight;
+    const yTop = laneTop + laneIndex * laneHeight;
     const yBottom = yTop + laneHeight - 22;
     const values = buckets.map((bucket) => config.value(bucket)).filter((value) => typeof value === "number" && !Number.isNaN(value));
     const maxValue = Math.max(...values, 0);
@@ -304,7 +345,7 @@ function renderTimelineChart(timeline) {
         if (typeof value !== "number" || Number.isNaN(value)) {
           return null;
         }
-        const x = left + (((bucket.startOffsetSeconds || 0) + (timeline.bucketSeconds || 10) / 2) / duration) * plotWidth;
+        const x = xForOffset((bucket.startOffsetSeconds || 0) + bucketSeconds / 2);
         const y = yBottom - (maxValue ? value / maxValue : 0) * (laneHeight - 30);
         return [x, y];
       })
@@ -317,6 +358,17 @@ function renderTimelineChart(timeline) {
     svg.append(lane);
   });
 
+  const markerGroup = svgElement("g", { class: "timeline-markers" });
+  for (const event of events.slice(0, 300)) {
+    const x = xForOffset(event.offsetSeconds || 0);
+    const dot = svgElement("circle", { cx: x, cy: flowTop - 4, r: 4, class: `event-dot ${event.stream}` });
+    const hover = svgElement("title");
+    hover.textContent = `${formatOffset(event.offsetSeconds)} ${event.stream}\n${event.message || ""}`;
+    dot.append(hover);
+    markerGroup.append(dot);
+  }
+  svg.append(markerGroup);
+
   const startLabel = svgElement("text", { x: left, y: height - 8, class: "axis-label" });
   startLabel.textContent = "0:00";
   const endLabel = svgElement("text", { x: width - right - 48, y: height - 8, class: "axis-label" });
@@ -324,108 +376,70 @@ function renderTimelineChart(timeline) {
   svg.append(startLabel, endLabel);
 }
 
-function renderTimelineTables(timeline) {
-  const eventRows = document.querySelector("#timeline-events");
-  const events = timeline?.events || [];
-  document.querySelector("#timeline-event-count").textContent = `${formatter.format(events.length)} events`;
-  const eventFragment = document.createDocumentFragment();
-  for (const event of events.slice(0, 200)) {
-    const row = document.createElement("tr");
-    const time = document.createElement("td");
-    const stream = document.createElement("td");
-    const message = document.createElement("td");
-    time.textContent = formatOffset(event.offsetSeconds);
-    stream.textContent = event.stream;
-    stream.className = event.stream === "stderr" ? "stream stderr" : "stream stdout";
-    message.textContent = event.message || "";
-    message.className = "mono";
-    row.append(time, stream, message);
-    eventFragment.append(row);
-  }
-  if (!events.length) {
-    eventFragment.append(emptyRow(3, "No stdout or stderr events."));
-  } else if (events.length > 200) {
-    eventFragment.append(emptyRow(3, `Showing first ${formatter.format(200)} events.`));
-  }
-  eventRows.replaceChildren(eventFragment);
-
-  const dnsRows = document.querySelector("#timeline-dns");
-  const flowRows = document.querySelector("#timeline-flows");
-  const dnsQueries = timeline?.network?.dnsQueries || [];
-  const flows = timeline?.network?.flows || [];
-  document.querySelector("#timeline-network-count").textContent =
-    `${formatter.format(dnsQueries.length)} DNS / ${formatter.format(flows.length)} flows`;
-
-  const dnsFragment = document.createDocumentFragment();
-  for (const query of dnsQueries.slice(0, 120)) {
-    const row = document.createElement("tr");
-    const bucket = document.createElement("td");
-    const name = document.createElement("td");
-    const answers = document.createElement("td");
-    bucket.textContent = timelineBucketLabel(query.offsetSeconds, timeline.bucketSeconds);
-    name.textContent = query.query || "unknown";
-    answers.textContent = (query.answers || []).join(", ") || "none";
-    answers.className = "mono";
-    row.append(bucket, name, answers);
-    dnsFragment.append(row);
-  }
-  if (!dnsQueries.length) {
-    dnsFragment.append(emptyRow(3, "No DNS queries."));
-  }
-  dnsRows.replaceChildren(dnsFragment);
-
-  const flowFragment = document.createDocumentFragment();
-  for (const flow of flows.slice(0, 120)) {
-    const row = document.createElement("tr");
-    const buckets = document.createElement("td");
-    const remote = document.createElement("td");
-    const dns = document.createElement("td");
-    const bytes = document.createElement("td");
-    const activeBuckets = [...new Set((flow.samples || []).map((sample) => timelineBucketLabel(sample.offsetSeconds, timeline.bucketSeconds)))];
-    buckets.textContent = activeBuckets.slice(0, 3).join(", ") || timelineBucketLabel(flow.firstSeenOffsetSeconds || 0, timeline.bucketSeconds);
-    remote.textContent = `${flow.protocol || "IP"} ${flow.remoteAddress || "unknown"}${flow.remotePort ? `:${flow.remotePort}` : ""}`;
-    remote.className = "mono";
-    dns.textContent = (flow.dnsNames || []).join(", ") || "unknown";
-    bytes.textContent = `${formatBytes(flow.totalRxBytes)} / ${formatBytes(flow.totalTxBytes)}`;
-    row.append(buckets, remote, dns, bytes);
-    flowFragment.append(row);
-  }
-  if (!flows.length) {
-    flowFragment.append(emptyRow(4, "No network flows."));
-  }
-  flowRows.replaceChildren(flowFragment);
+function renderTimelineCard(entry, timeline) {
+  const article = document.createElement("article");
+  article.className = "timeline-card";
+  const head = document.createElement("div");
+  head.className = "timeline-card-head";
+  const title = document.createElement("h3");
+  title.textContent = entry.label;
+  const summary = document.createElement("span");
+  const events = timeline?.events?.length || 0;
+  const flows = timeline?.network?.flows?.length || 0;
+  const dns = timeline?.network?.dnsQueries?.length || 0;
+  summary.className = "muted";
+  summary.textContent = `${formatter.format(timeline?.buckets?.length || 0)} buckets / ${formatter.format(events)} events / ${formatter.format(dns)} DNS / ${formatter.format(flows)} flows`;
+  head.append(title, summary);
+  const wrap = document.createElement("div");
+  wrap.className = "timeline-chart-wrap";
+  const svg = svgElement("svg", { class: "timeline-chart", role: "img", "aria-label": `${entry.label} timeline` });
+  wrap.append(svg);
+  article.append(head, wrap);
+  renderTimelineChart(svg, timeline, entry);
+  return article;
 }
 
-function renderTimeline(timeline, entry) {
-  timelineData = timeline;
-  document.querySelector("#timeline-title").textContent = `Timeline - ${entry?.label || "validator"}`;
+function renderAllTimelines() {
+  const container = document.querySelector("#timelines");
+  if (!currentSummary?.entries?.length) {
+    container.replaceChildren();
+    document.querySelector("#timeline-summary").textContent = "";
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  for (const entry of currentSummary.entries) {
+    const timeline = timelineByValidator.get(entry.id);
+    if (timeline) {
+      fragment.append(renderTimelineCard(entry, timeline));
+    } else {
+      const pending = document.createElement("article");
+      pending.className = "timeline-card";
+      pending.textContent = `Loading ${entry.label} timeline...`;
+      fragment.append(pending);
+    }
+  }
+  container.replaceChildren(fragment);
+  const loaded = currentSummary.entries.filter((entry) => timelineByValidator.has(entry.id)).length;
   document.querySelector("#timeline-summary").textContent =
-    `${formatter.format(timeline?.buckets?.length || 0)} buckets at ${formatter.format(timeline?.bucketSeconds || 10)}s`;
-  renderTimelineChart(timeline);
-  renderTimelineTables(timeline);
+    `${formatter.format(loaded)} / ${formatter.format(currentSummary.entries.length)} charts loaded`;
 }
 
-async function selectTimelineValidator(entryId) {
-  if (!currentSummary) {
-    return;
-  }
-  const entry = currentSummary.entries.find((item) => item.id === entryId) || currentSummary.entries[0];
-  if (!entry) {
-    return;
-  }
-  timelineValidator = entry.id;
-  document.querySelectorAll("#validators tr").forEach((row) => {
-    row.classList.toggle("is-selected", row.dataset.validator === timelineValidator);
-  });
-  if (!entry.paths?.timeline) {
-    renderTimeline({ bucketSeconds: 10, buckets: [], events: [], network: { dnsQueries: [], flows: [] } }, entry);
-    return;
-  }
-  if (!timelineCache.has(entry.paths.timeline)) {
-    document.querySelector("#timeline-summary").textContent = "Loading...";
-    timelineCache.set(entry.paths.timeline, await fetchJson(entry.paths.timeline));
-  }
-  renderTimeline(timelineCache.get(entry.paths.timeline), entry);
+async function loadAllTimelines(summary) {
+  timelineByValidator.clear();
+  renderAllTimelines();
+  await Promise.all(
+    summary.entries.map(async (entry) => {
+      if (!entry.paths?.timeline) {
+        timelineByValidator.set(entry.id, { bucketSeconds: 10, buckets: [], events: [], network: { dnsQueries: [], flows: [] } });
+        return;
+      }
+      if (!timelineCache.has(entry.paths.timeline)) {
+        timelineCache.set(entry.paths.timeline, await fetchJson(entry.paths.timeline));
+      }
+      timelineByValidator.set(entry.id, timelineCache.get(entry.paths.timeline));
+      renderAllTimelines();
+    }),
+  );
 }
 
 function renderValidators(summary) {
@@ -433,8 +447,6 @@ function renderValidators(summary) {
   const fragment = document.createDocumentFragment();
   for (const entry of summary.entries) {
     const row = document.createElement("tr");
-    row.dataset.validator = entry.id;
-    row.tabIndex = 0;
     const status = document.createElement("span");
     status.className = `status ${entry.success ? "ok" : "fail"}`;
     status.textContent = entry.success ? "ok" : `failed ${entry.exitCode ?? ""}`.trim();
@@ -452,20 +464,9 @@ function renderValidators(summary) {
     `;
     row.children[2].replaceChildren(status);
     row.children[8].replaceChildren(linkList(entry.paths));
-    row.addEventListener("click", () => selectTimelineValidator(entry.id).catch(showError));
-    row.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        selectTimelineValidator(entry.id).catch(showError);
-      }
-    });
     fragment.append(row);
   }
   tbody.replaceChildren(fragment);
-  const nextTimeline = summary.entries.some((entry) => entry.id === timelineValidator) ? timelineValidator : summary.entries[0]?.id;
-  if (nextTimeline) {
-    selectTimelineValidator(nextTimeline).catch(showError);
-  }
 }
 
 function setView(view) {
@@ -807,9 +808,8 @@ async function loadRun(runId) {
   fileTree = null;
   fileRows = [];
   filePage = 0;
-  timelineValidator = null;
-  timelineData = null;
   render(summary);
+  await loadAllTimelines(summary);
   if (currentView === "resources") {
     await loadResourceReport();
   }
@@ -859,9 +859,7 @@ function setupControls() {
   });
   document.querySelectorAll("[data-timeline-series]").forEach((input) => {
     input.addEventListener("change", () => {
-      if (timelineData) {
-        renderTimelineChart(timelineData);
-      }
+      renderAllTimelines();
     });
   });
 }
