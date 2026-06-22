@@ -38,8 +38,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Install observability report tooling
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark
+
+      - name: Check observability tooling
+        run: |
+          python3 scripts/check_observability_tools.py --output "out/${{ matrix.id }}/ebpf"
+          cat "out/${{ matrix.id }}/ebpf/tooling.log"
+
       - name: Run validator
-        run: python3 scripts/run_validator.py --config validators.yml --entry-id "${{ matrix.id }}" --output "out/${{ matrix.id }}" || true
+        run: python3 scripts/run_validator.py --config validators.yml --entry-id "${{ matrix.id }}" --output "out/${{ matrix.id }}" --capture-observability || true
 
       - name: Ensure validator result metadata
         if: always()
@@ -59,6 +69,26 @@ jobs:
           out.mkdir(parents=True, exist_ok=True)
           for name in ("stdout.log", "stderr.log"):
               (out / name).touch()
+          (out / "docker-stats.jsonl").touch()
+          default_resource_usage = {
+              "sampleCount": 0,
+              "sampleSpanSeconds": 0,
+              "meanCpuPercent": None,
+              "peakCpuPercent": None,
+              "meanProcessorCores": None,
+              "peakProcessorCores": None,
+              "meanMemoryBytes": None,
+              "peakMemoryBytes": None,
+              "memoryLimitBytes": None,
+              "networkRxBytes": None,
+              "networkTxBytes": None,
+              "meanNetworkRxBps": None,
+              "meanNetworkTxBps": None,
+              "peakPids": None,
+          }
+          resource_usage = out / "resource-usage.json"
+          if not resource_usage.exists():
+              resource_usage.write_text(json.dumps(default_resource_usage, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           status = out / "status.json"
           if not status.exists():
               now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -76,8 +106,13 @@ jobs:
                   "rawFiles": [],
                   "archives": [],
                   "cacheTree": None,
+                  "resourceUsage": default_resource_usage,
                   "normalizationError": "validator runner exited before writing status.json"
               }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          else:
+              status_data = json.loads(status.read_text(encoding="utf-8"))
+              status_data.setdefault("resourceUsage", json.loads(resource_usage.read_text(encoding="utf-8")))
+              status.write_text(json.dumps(status_data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           PY
 
       - name: Upload validator result
@@ -89,6 +124,21 @@ jobs:
             out/${{ matrix.id }}/status.json
             out/${{ matrix.id }}/stdout.log
             out/${{ matrix.id }}/stderr.log
+            out/${{ matrix.id }}/resource-usage.json
+            out/${{ matrix.id }}/docker-stats.jsonl
+            out/${{ matrix.id }}/ebpf/tooling.json
+            out/${{ matrix.id }}/ebpf/tooling.log
+            out/${{ matrix.id }}/ebpf/capture-status.json
+            out/${{ matrix.id }}/ebpf/capture.log
+            out/${{ matrix.id }}/ebpf/tcpdump.log
+            out/${{ matrix.id }}/ebpf/network-tcpdump.log
+            out/${{ matrix.id }}/ebpf/dns-queries.tsv
+            out/${{ matrix.id }}/ebpf/network-flows.json
+            out/${{ matrix.id }}/ebpf/tcp-bps.log
+            out/${{ matrix.id }}/ebpf/tcp-flows.json
+            out/${{ matrix.id }}/ebpf/tcp-life.log
+            out/${{ matrix.id }}/ebpf/syscalls.log
+            out/${{ matrix.id }}/ebpf/memory-allocations.log
             out/${{ matrix.id }}/*.log
             out/${{ matrix.id }}/normalized.json
             out/${{ matrix.id }}/cache-tree.json

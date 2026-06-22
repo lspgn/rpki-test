@@ -200,6 +200,26 @@ def copy_result(result_dir: Path, target_dir: Path) -> dict[str, Any]:
         if archive_path.exists():
             print(f"Deriving cache-tree.json from {archive_path}")
             cache_tree_from_archive(archive_path, target_dir / "cache-tree.json")
+    ebpf_out = target_dir / "ebpf"
+    for name in (
+        "tooling.json",
+        "tooling.log",
+        "capture-status.json",
+        "capture.log",
+        "tcpdump.log",
+        "network-tcpdump.log",
+        "dns-queries.tsv",
+        "network-flows.json",
+        "tcp-bps.log",
+        "tcp-flows.json",
+        "tcp-life.log",
+        "syscalls.log",
+        "memory-allocations.log",
+    ):
+        source = result_dir / "ebpf" / name
+        if source.exists():
+            ebpf_out.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, ebpf_out / name)
     for source in sorted(result_dir.glob("*.log")):
         if source.name not in {"stdout.log", "stderr.log"}:
             shutil.copy2(source, target_dir / source.name)
@@ -486,6 +506,30 @@ def main() -> None:
             for path in (entry_dir / "resource-usage.json", entry_dir / "docker-stats.jsonl")
             if path.exists()
         ]
+        observability_paths = [
+            f"data/runs/{run_id}/{copied_status['id']}/{name}"
+            for name in ("resource-usage.json", "docker-stats.jsonl")
+            if (entry_dir / name).exists()
+        ]
+        observability_paths.extend(
+            f"data/runs/{run_id}/{copied_status['id']}/ebpf/{name}"
+            for name in (
+                "tooling.json",
+                "tooling.log",
+                "capture-status.json",
+                "capture.log",
+                "tcpdump.log",
+                "network-tcpdump.log",
+                "dns-queries.tsv",
+                "network-flows.json",
+                "tcp-bps.log",
+                "tcp-flows.json",
+                "tcp-life.log",
+                "syscalls.log",
+                "memory-allocations.log",
+            )
+            if (entry_dir / "ebpf" / name).exists()
+        )
         cache_tree_path = None
         cache_tree_metadata = copied_status.get("cacheTree") or None
         cache_tree_file = entry_dir / "cache-tree.json"
@@ -531,6 +575,7 @@ def main() -> None:
                 "success": copied_status.get("success", False),
                 "exitCode": copied_status.get("exitCode"),
                 "durationSeconds": copied_status.get("durationSeconds"),
+                "resourceUsage": copied_status.get("resourceUsage", {}),
                 "payloads": copied_status.get("payloads", {}),
                 "unsupported": copied_status.get("unsupported", []),
                 "counts": counts,
@@ -545,6 +590,7 @@ def main() -> None:
                     "logs": extra_logs,
                     "support": support_files,
                     "cacheTree": cache_tree_path,
+                    "observability": observability_paths,
                 },
                 "normalized": normalized,
             }

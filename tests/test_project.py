@@ -14,8 +14,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from aggregate_results import cache_tree_from_archive, main as aggregate_main  # noqa: E402
+from check_observability_tools import collect_tooling_status  # noqa: E402
 from rpki_project import load_config, normalize_payloads, payload_counts, read_json, validators, write_json  # noqa: E402
-from run_validator import compress_raw_files, write_cache_tree  # noqa: E402
+from run_validator import compress_raw_files, parse_bytes, summarize_docker_stats, write_cache_tree  # noqa: E402
+from summarize_network_packets import DNS_FIELDS, FIELDS as NETWORK_PACKET_FIELDS  # noqa: E402
+from summarize_network_packets import read_dns_names_by_ip, read_packets, summarize_packets  # noqa: E402
+from summarize_tcp_bps import parse_tcptop  # noqa: E402
 
 
 class NormalizationTests(unittest.TestCase):
@@ -67,6 +71,133 @@ class ConfigTests(unittest.TestCase):
             self.assertIn("payloads", entry)
 
 
+class ResourceUsageTests(unittest.TestCase):
+    def test_parse_docker_byte_units(self) -> None:
+        self.assertEqual(parse_bytes("1.5MiB"), 1572864)
+        self.assertEqual(parse_bytes("2 GB"), 2000000000)
+        self.assertIsNone(parse_bytes("unknown"))
+
+    def test_summarize_docker_stats_calculates_peaks_and_rates(self) -> None:
+        samples = [
+            {
+                "_monotonic": 10.0,
+                "CPUPerc": "25.00%",
+                "MemUsage": "128MiB / 2GiB",
+                "NetIO": "100B / 200B",
+                "PIDs": "4",
+            },
+            {
+                "_monotonic": 14.0,
+                "CPUPerc": "150.00%",
+                "MemUsage": "256MiB / 2GiB",
+                "NetIO": "500B / 1000B",
+                "PIDs": "8",
+            },
+        ]
+
+        summary = summarize_docker_stats(samples)
+
+        self.assertEqual(summary["sampleCount"], 2)
+        self.assertEqual(summary["peakProcessorCores"], 1.5)
+        self.assertEqual(summary["peakMemoryBytes"], 268435456)
+        self.assertEqual(summary["meanNetworkRxBps"], 100)
+        self.assertEqual(summary["meanNetworkTxBps"], 200)
+        self.assertEqual(summary["peakPids"], 8)
+
+
+class TcpFlowSummaryTests(unittest.TestCase):
+    def test_parse_tcptop_summarizes_flow_bytes_and_rates(self) -> None:
+        text = """Tracing... Output every 1 secs. Hit Ctrl-C to end
+12:00:00 loadavg: 0.00 0.01 0.05 1/100 1234
+PID    COMM         LADDR                 RADDR                  RX_KB TX_KB
+42     validator    10.0.0.2:50000        203.0.113.10:443       4     1
+12:00:01 loadavg: 0.00 0.01 0.05 1/100 1234
+PID    COMM         LADDR                 RADDR                  RX_KB TX_KB
+42     validator    10.0.0.2:50000        203.0.113.10:443       8     2
+42     validator    10.0.0.2:50001        192.0.2.53:53          1     0
+"""
+
+        summary = parse_tcptop(text, interval_seconds=1.0)
+
+        self.assertEqual(summary["sampleCount"], 3)
+        self.assertEqual(summary["flowCount"], 2)
+        self.assertEqual(summary["totalRxBytes"], 13 * 1024)
+        self.assertEqual(summary["totalTxBytes"], 3 * 1024)
+        flow = next(item for item in summary["flows"] if item["remotePort"] == 443)
+        self.assertEqual(flow["sampleCount"], 2)
+        self.assertEqual(flow["totalRxBytes"], 12 * 1024)
+        self.assertEqual(flow["totalTxBytes"], 3 * 1024)
+        self.assertEqual(flow["minRxBps"], 4 * 1024)
+        self.assertEqual(flow["maxRxBps"], 8 * 1024)
+        self.assertEqual(flow["samples"][0]["time"], "12:00:00")
+
+
+class NetworkFlowSummaryTests(unittest.TestCase):
+    def test_packet_fields_summarize_container_flows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "packets.tsv"
+            source.write_text(
+                "\t".join(NETWORK_PACKET_FIELDS)
+                + "\n"
+                + "100.0\t60\t172.17.0.2\t192.0.2.53\t\t\t\t\t50000\t53\tDNS\texample.net\n"
+                + "100.5\t120\t192.0.2.53\t172.17.0.2\t\t\t\t\t53\t50000\tDNS\texample.net\n"
+                + "101.2\t1000\t203.0.113.10\t172.17.0.2\t\t\t443\t40000\t\t\tTCP\t\n"
+                + "101.4\t500\t172.17.0.2\t203.0.113.10\t\t\t40000\t443\t\t\tTCP\t\n"
+                + "101.4\t500\t172.17.0.2\t203.0.113.10\t\t\t40000\t443\t\t\tTCP\t\n"
+                + "101.8\t900\t10.1.0.1\t198.51.100.1\t\t\t12345\t443\t\t\tTCP\t\n",
+                encoding="utf-8",
+            )
+            dns = Path(tmp) / "dns.tsv"
+            dns.write_text(
+                "\t".join(DNS_FIELDS)
+                + "\n"
+                + "100.5\t192.0.2.53\t172.17.0.2\t53\t50000\trepo.example.net\t203.0.113.10\t\tcdn.example.net\n",
+                encoding="utf-8",
+            )
+
+            summary = summarize_packets(
+                read_packets(source),
+                ["172.17.0.2"],
+                bucket_seconds=1.0,
+                dns_names_by_ip=read_dns_names_by_ip(dns),
+            )
+
+        self.assertEqual(summary["packetCount"], 6)
+        self.assertEqual(summary["matchedPacketCount"], 4)
+        self.assertEqual(summary["ignoredPacketCount"], 1)
+        self.assertEqual(summary["flowCount"], 2)
+        self.assertEqual(summary["totalRxBytes"], 1120)
+        self.assertEqual(summary["totalTxBytes"], 560)
+        self.assertEqual(summary["maxRxBps"], 1000)
+        self.assertEqual(summary["maxTxBps"], 500)
+        tcp_flow = next(flow for flow in summary["flows"] if flow["protocol"] == "TCP")
+        self.assertEqual(tcp_flow["remoteAddress"], "203.0.113.10")
+        self.assertEqual(tcp_flow["remotePort"], 443)
+        self.assertEqual(tcp_flow["totalRxBytes"], 1000)
+        self.assertEqual(tcp_flow["totalTxBytes"], 500)
+        self.assertEqual(tcp_flow["candidateDnsNames"], ["cdn.example.net", "repo.example.net"])
+        self.assertEqual(tcp_flow["dnsNames"], ["cdn.example.net", "repo.example.net"])
+        dns_flow = next(flow for flow in summary["flows"] if flow["protocol"] == "UDP")
+        self.assertEqual(dns_flow["dnsNames"], ["example.net"])
+        self.assertEqual(dns_flow["directDnsNames"], ["example.net"])
+
+
+class ObservabilityToolingTests(unittest.TestCase):
+    def test_collect_tooling_status_reports_required_commands(self) -> None:
+        status = collect_tooling_status()
+
+        self.assertIn("generatedAt", status)
+        self.assertIn("isRoot", status)
+        self.assertIn("sudoNonInteractive", status)
+        self.assertIn("canUsePrivilege", status)
+        self.assertIn("canAttemptCapture", status)
+        self.assertIn("/sys/kernel/debug/tracing", status["kernelPaths"])
+        self.assertIn("exists", status["kernelPaths"]["/sys/kernel/debug/tracing"])
+        for command in ("tcpdump", "tshark", "tcptop-bpfcc", "tcplife-bpfcc"):
+            self.assertIn(command, status["commands"])
+            self.assertIn("available", status["commands"][command])
+
+
 class AggregateTests(unittest.TestCase):
     def test_fixture_site_build(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -94,6 +225,11 @@ class AggregateTests(unittest.TestCase):
                     "success": True,
                     "exitCode": 0,
                     "durationSeconds": 1,
+                    "resourceUsage": {
+                        "peakProcessorCores": 1.25,
+                        "peakMemoryBytes": 268435456,
+                        "sampleCount": 2,
+                    },
                     "payloads": payloads,
                     "unsupported": [name for name, supported in payloads.items() if supported is False],
                 }
@@ -105,6 +241,23 @@ class AggregateTests(unittest.TestCase):
                     )
                 write_json(out / "normalized.json", normalized)
                 compress_raw_files(raw_dir)
+                write_json(out / "resource-usage.json", status["resourceUsage"])
+                (out / "docker-stats.jsonl").write_text("", encoding="utf-8")
+                ebpf_dir = out / "ebpf"
+                ebpf_dir.mkdir()
+                write_json(ebpf_dir / "tooling.json", {"canAttemptCapture": False})
+                (ebpf_dir / "tooling.log").write_text("canAttemptCapture=False\n", encoding="utf-8")
+                write_json(ebpf_dir / "capture-status.json", {"started": True})
+                (ebpf_dir / "capture.log").write_text("capture finished\n", encoding="utf-8")
+                (ebpf_dir / "tcpdump.log").write_text("1 packet captured\n", encoding="utf-8")
+                (ebpf_dir / "network-tcpdump.log").write_text("2 packets captured\n", encoding="utf-8")
+                (ebpf_dir / "dns-queries.tsv").write_text("time\tsrc\tdst\tquery\n", encoding="utf-8")
+                write_json(ebpf_dir / "network-flows.json", {"flowCount": 1, "flows": []})
+                (ebpf_dir / "tcp-bps.log").write_text("127.0.0.1:443 1024\n", encoding="utf-8")
+                write_json(ebpf_dir / "tcp-flows.json", {"flowCount": 1, "flows": []})
+                (ebpf_dir / "syscalls.log").write_text("syscall count\n", encoding="utf-8")
+                (ebpf_dir / "memory-allocations.log").write_text("allocation stack\n", encoding="utf-8")
+                (ebpf_dir / "dns.pcap").write_bytes(b"not published")
                 (out / "stdout.log").write_text("", encoding="utf-8")
                 (out / "stderr.log").write_text("", encoding="utf-8")
                 write_json(out / "cache-tree.json", {"roots": ["cache", "tals"], "files": 0, "size": 0, "entries": []})
@@ -146,6 +299,23 @@ class AggregateTests(unittest.TestCase):
             self.assertEqual(extra[3], ["fort-test"])
             self.assertTrue((public / "data/runs/fixture-run/routinator-test/raw/raw.json.gz").exists())
             self.assertFalse((public / "data/runs/fixture-run/routinator-test/raw/raw.json").exists())
+            self.assertEqual(latest["entries"][0]["resourceUsage"]["peakProcessorCores"], 1.25)
+            observability = latest["entries"][0]["paths"]["observability"]
+            self.assertTrue(any(path.endswith("resource-usage.json") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/tooling.json") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/tooling.log") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/capture-status.json") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/capture.log") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/tcpdump.log") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/network-tcpdump.log") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/dns-queries.tsv") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/network-flows.json") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/tcp-bps.log") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/tcp-flows.json") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/syscalls.log") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/memory-allocations.log") for path in observability))
+            self.assertFalse(any(path.endswith("dns.pcap") for path in observability))
+            self.assertFalse(any(path.endswith("network.pcap") for path in observability))
             self.assertTrue((public / "index.html").exists())
 
 
