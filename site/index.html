@@ -21,34 +21,132 @@
     <main>
       <section class="summary-grid" id="summary-grid"></section>
 
-      <section class="toolbar" aria-label="Payload selector">
-        <button class="tab is-active" data-payload="routeOrigins" type="button">ROA / VRP</button>
-        <button class="tab" data-payload="routerKeys" type="button">BGPsec Keys</button>
-        <button class="tab" data-payload="aspas" type="button">ASPA</button>
+      <section class="toolbar" aria-label="View selector">
+        <button class="tab is-active" data-view="validators" type="button">Validators</button>
+        <button class="tab" data-view="resources" type="button">Resources</button>
+        <button class="tab" data-view="files" type="button">Files</button>
       </section>
 
-      <section>
-        <h2>Validator Runs</h2>
+      <section class="view is-active" id="validators-view">
+        <h2>Validators</h2>
         <div class="table-wrap">
-          <table>
+          <table class="validators-table">
             <thead>
               <tr>
                 <th>Validator</th>
                 <th>Version</th>
                 <th>Status</th>
-                <th>Payload Count</th>
-                <th>Unsupported</th>
+                <th>Time</th>
+                <th>Bytes Exchanged</th>
+                <th>Bytes On Disk</th>
+                <th>Memory Max / Avg</th>
+                <th>CPU Max / Avg</th>
                 <th>Downloads</th>
               </tr>
             </thead>
-            <tbody id="entries"></tbody>
+            <tbody id="validators"></tbody>
           </table>
         </div>
       </section>
 
-      <section>
-        <h2>Pairwise Differences</h2>
-        <div id="diffs" class="diff-list"></div>
+      <section class="view" id="resources-view">
+        <div class="section-head">
+          <h2>Resources</h2>
+          <span class="muted" id="resource-count"></span>
+        </div>
+        <div class="controls">
+          <label>
+            <span>Type</span>
+            <select id="resource-payload">
+              <option value="routeOrigins">ROA / VRP</option>
+              <option value="routerKeys">BGPsec Keys</option>
+              <option value="aspas">ASPA</option>
+            </select>
+          </label>
+          <label class="search-control">
+            <span>Search</span>
+            <input id="resource-search" type="search" placeholder="prefix, ASN, validator, path, sha">
+          </label>
+          <label>
+            <span>Sort</span>
+            <select id="resource-sort">
+              <option value="difference">Differences first</option>
+              <option value="object">Object</option>
+              <option value="seen">Seen count</option>
+              <option value="missing">Missing count</option>
+            </select>
+          </label>
+          <label>
+            <span>Seen Filter</span>
+            <select id="resource-seen-filter">
+              <option value="all">All resources</option>
+              <option value="divergent">Differences only</option>
+            </select>
+          </label>
+          <div class="pager">
+            <button id="resource-prev" type="button">Prev</button>
+            <span id="resource-page" class="muted"></span>
+            <button id="resource-next" type="button">Next</button>
+          </div>
+        </div>
+        <p class="scope-note" id="resource-scope"></p>
+        <div class="table-wrap">
+          <table class="resources-table">
+            <thead>
+              <tr>
+                <th>Object</th>
+                <th>Seen By</th>
+                <th>Missing From</th>
+                <th>Resource Path / SHA</th>
+              </tr>
+            </thead>
+            <tbody id="resources"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="view" id="files-view">
+        <div class="section-head">
+          <h2>Files</h2>
+          <span class="muted" id="file-count"></span>
+        </div>
+        <div class="controls">
+          <label>
+            <span>Validator</span>
+            <select id="file-validator"></select>
+          </label>
+          <label class="search-control">
+            <span>Search</span>
+            <input id="file-search" type="search" placeholder="path or sha">
+          </label>
+          <label>
+            <span>Sort</span>
+            <select id="file-sort">
+              <option value="path">Path</option>
+              <option value="size-desc">Size, largest first</option>
+              <option value="sha">SHA-256</option>
+            </select>
+          </label>
+          <div class="pager">
+            <button id="file-prev" type="button">Prev</button>
+            <span id="file-page" class="muted"></span>
+            <button id="file-next" type="button">Next</button>
+          </div>
+        </div>
+        <p class="scope-note" id="file-scope"></p>
+        <div class="table-wrap">
+          <table class="files-table">
+            <thead>
+              <tr>
+                <th>Root</th>
+                <th>Path</th>
+                <th>Size</th>
+                <th>SHA-256</th>
+              </tr>
+            </thead>
+            <tbody id="files"></tbody>
+          </table>
+        </div>
       </section>
     </main>
 

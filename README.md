@@ -2,7 +2,7 @@
 
 This project runs daily RPKI validation with multiple relying-party validators and publishes the results to GitHub Pages.
 
-It keeps each validator's raw JSON output, normalizes shared payloads into a common shape, and builds a static dashboard for comparing validators and versions.
+It keeps each validator's compressed raw JSON output, normalizes shared payloads into a common shape, records a lightweight cache/TAL file inventory, and builds a static dashboard for comparing validators and versions.
 
 ## Validators
 
@@ -24,16 +24,25 @@ The default entries enable all supported payloads:
 
 ## GitHub Pages
 
-The workflow publishes:
+The workflow publishes only the latest run for now:
 
-- `data/manifest.json`: retained run history
+- `data/manifest.json`: latest run manifest
 - `data/latest.json`: latest run summary
 - `data/runs/<run-id>/summary.json`: per-run summary and comparisons
 - `data/runs/<run-id>/<validator-id>/normalized.json`: common payload schema
 - `data/runs/<run-id>/<validator-id>/raw/*.json.gz`: compressed native validator output
+- `data/runs/<run-id>/<validator-id>/cache-tree.json`: cache and TAL file inventory with size and SHA-256 hashes
+- `data/runs/<run-id>/reports/<payload>.json`: object presence report showing which eligible validators saw each normalized object
 - logs and status metadata for every validator/version
+- `resource-usage.json` and `docker-stats.jsonl` for CPU, RAM, PID, and network sizing
 
-History is retained as long as the generated Pages site stays below the configured size cap. The workflow defaults to `996147200` bytes, leaving headroom under GitHub Pages' 1 GB published-site limit.
+History retention is disabled while the artifact set is kept lightweight. Raw validator output is published only as `.json.gz`; uncompressed duplicates and cache tarballs are not uploaded.
+
+## Observability
+
+Each validator run samples `docker stats` and calculates peak RAM, peak CPU cores, mean CPU cores, and mean network throughput. The dashboard shows the peak CPU/RAM values per validator, and the raw sizing artifacts are published next to each run.
+
+See `docs/observability.md` for the optional privileged eBPF workflow covering DNS capture, per-IP/port throughput, syscall counts, and allocation tracing.
 
 ## Local Tests
 
