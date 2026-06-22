@@ -38,6 +38,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Check observability tooling
+        run: python3 scripts/check_observability_tools.py --output "out/${{ matrix.id }}/ebpf"
+
       - name: Run validator
         run: python3 scripts/run_validator.py --config validators.yml --entry-id "${{ matrix.id }}" --output "out/${{ matrix.id }}" || true
 
@@ -115,6 +118,8 @@ jobs:
             out/${{ matrix.id }}/stderr.log
             out/${{ matrix.id }}/resource-usage.json
             out/${{ matrix.id }}/docker-stats.jsonl
+            out/${{ matrix.id }}/ebpf/tooling.json
+            out/${{ matrix.id }}/ebpf/tooling.log
             out/${{ matrix.id }}/ebpf/dns-queries.tsv
             out/${{ matrix.id }}/ebpf/tcp-bps.log
             out/${{ matrix.id }}/ebpf/tcp-flows.json

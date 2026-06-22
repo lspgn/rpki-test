@@ -5,6 +5,7 @@ entry and publishes these artifacts:
 
 - `resource-usage.json`: calculated CPU, memory, PID, and network summary
 - `docker-stats.jsonl`: raw `docker stats --no-stream --format '{{json .}}'` samples
+- `ebpf/tooling.json` and `ebpf/tooling.log`: non-invasive preflight showing whether capture tools were available
 - `ebpf/dns-queries.tsv`: derived DNS query report, when collected
 - `ebpf/tcp-flows.json`: per-flow RX/TX bytes plus min/max rates over time, when collected
 - `ebpf/tcp-bps.log` and `ebpf/tcp-life.log`: source byte/connection reports, when collected

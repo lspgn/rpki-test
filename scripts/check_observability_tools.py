@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Record whether optional privileged observability tooling is available."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import platform
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Any
+
+from rpki_project import utc_now, write_json
+
+
+COMMANDS = (
+    "sudo",
+    "tcpdump",
+    "tshark",
+    "tcptop-bpfcc",
+    "tcplife-bpfcc",
+    "syscount-bpfcc",
+    "memleak-bpfcc",
+    "bpftrace",
+)
+
+
+def command_version(command: str) -> str | None:
+    path = shutil.which(command)
+    if path is None:
+        return None
+    for args in ((command, "--version"), (command, "-V"), (command, "-h")):
+        try:
+            completed = subprocess.run(
+                list(args),
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        output = "\n".join(part for part in (completed.stdout, completed.stderr) if part).strip()
+        if output:
+            return output.splitlines()[0][:240]
+    return None
+
+
+def collect_tooling_status() -> dict[str, Any]:
+    commands = {}
+    for command in COMMANDS:
+        path = shutil.which(command)
+        commands[command] = {
+            "available": path is not None,
+            "path": path,
+            "version": command_version(command) if path else None,
+        }
+
+    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+    kernel = platform.release()
+    paths = {
+        "/sys/fs/bpf": Path("/sys/fs/bpf").exists(),
+        "/sys/kernel/debug/tracing": Path("/sys/kernel/debug/tracing").exists(),
+        "/sys/kernel/tracing": Path("/sys/kernel/tracing").exists(),
+    }
+    required_for_reports = ("tcpdump", "tshark", "tcptop-bpfcc", "tcplife-bpfcc")
+    missing = [command for command in required_for_reports if not commands[command]["available"]]
+
+    return {
+        "generatedAt": utc_now(),
+        "platform": platform.platform(),
+        "kernel": kernel,
+        "isRoot": is_root,
+        "commands": commands,
+        "kernelPaths": paths,
+        "canAttemptCapture": is_root and not missing,
+        "missingRequiredCommands": missing,
+        "note": "This is a non-invasive preflight; it does not start packet capture or eBPF tracing.",
+    }
+
+
+def write_log(path: Path, status: dict[str, Any]) -> None:
+    lines = [
+        f"generatedAt={status['generatedAt']}",
+        f"platform={status['platform']}",
+        f"kernel={status['kernel']}",
+        f"isRoot={status['isRoot']}",
+        f"canAttemptCapture={status['canAttemptCapture']}",
+    ]
+    if status["missingRequiredCommands"]:
+        lines.append("missingRequiredCommands=" + ",".join(status["missingRequiredCommands"]))
+    for command, item in status["commands"].items():
+        value = item["path"] if item["available"] else "missing"
+        if item.get("version"):
+            value += f" ({item['version']})"
+        lines.append(f"command.{command}={value}")
+    for name, exists in status["kernelPaths"].items():
+        lines.append(f"path.{name}={exists}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", required=True, help="directory for tooling.json and tooling.log")
+    args = parser.parse_args()
+
+    output_dir = Path(args.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    status = collect_tooling_status()
+    write_json(output_dir / "tooling.json", status)
+    write_log(output_dir / "tooling.log", status)
+
+
+if __name__ == "__main__":
+    main()

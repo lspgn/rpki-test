@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from aggregate_results import main as aggregate_main  # noqa: E402
+from check_observability_tools import collect_tooling_status  # noqa: E402
 from rpki_project import load_config, normalize_payloads, payload_counts, read_json, validators, write_json  # noqa: E402
 from run_validator import archive_work_dir, parse_bytes, summarize_docker_stats  # noqa: E402
 from summarize_tcp_bps import parse_tcptop  # noqa: E402
@@ -128,6 +129,18 @@ PID    COMM         LADDR                 RADDR                  RX_KB TX_KB
         self.assertEqual(flow["samples"][0]["time"], "12:00:00")
 
 
+class ObservabilityToolingTests(unittest.TestCase):
+    def test_collect_tooling_status_reports_required_commands(self) -> None:
+        status = collect_tooling_status()
+
+        self.assertIn("generatedAt", status)
+        self.assertIn("isRoot", status)
+        self.assertIn("canAttemptCapture", status)
+        for command in ("tcpdump", "tshark", "tcptop-bpfcc", "tcplife-bpfcc"):
+            self.assertIn(command, status["commands"])
+            self.assertIn("available", status["commands"][command])
+
+
 class AggregateTests(unittest.TestCase):
     def test_fixture_site_build(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -168,6 +181,8 @@ class AggregateTests(unittest.TestCase):
                 (out / "docker-stats.jsonl").write_text("", encoding="utf-8")
                 ebpf_dir = out / "ebpf"
                 ebpf_dir.mkdir()
+                write_json(ebpf_dir / "tooling.json", {"canAttemptCapture": False})
+                (ebpf_dir / "tooling.log").write_text("canAttemptCapture=False\n", encoding="utf-8")
                 (ebpf_dir / "dns-queries.tsv").write_text("time\tsrc\tdst\tquery\n", encoding="utf-8")
                 (ebpf_dir / "tcp-bps.log").write_text("127.0.0.1:443 1024\n", encoding="utf-8")
                 write_json(ebpf_dir / "tcp-flows.json", {"flowCount": 1, "flows": []})
@@ -202,6 +217,8 @@ class AggregateTests(unittest.TestCase):
             self.assertEqual(latest["entries"][0]["resourceUsage"]["peakProcessorCores"], 1.25)
             observability = latest["entries"][0]["paths"]["observability"]
             self.assertTrue(any(path.endswith("resource-usage.json") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/tooling.json") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/tooling.log") for path in observability))
             self.assertTrue(any(path.endswith("ebpf/dns-queries.tsv") for path in observability))
             self.assertTrue(any(path.endswith("ebpf/tcp-bps.log") for path in observability))
             self.assertTrue(any(path.endswith("ebpf/tcp-flows.json") for path in observability))
