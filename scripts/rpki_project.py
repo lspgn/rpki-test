@@ -130,7 +130,49 @@ def source_ta(data: dict[str, Any]) -> str | None:
     source = data.get("source")
     if isinstance(source, dict):
         return source_ta(source)
+    if isinstance(source, list):
+        for item in source:
+            if isinstance(item, dict):
+                value = source_ta(item)
+                if value is not None:
+                    return value
     return None
+
+
+def compact_source_files(data: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = []
+    source = data.get("source")
+    if isinstance(source, dict):
+        candidates.append(source)
+    elif isinstance(source, list):
+        candidates.extend(item for item in source if isinstance(item, dict))
+    for key in ("sourceFiles", "source_files", "files"):
+        value = data.get(key)
+        if isinstance(value, list):
+            candidates.extend(value)
+
+    output = []
+    for value in candidates:
+        if isinstance(value, str):
+            output.append({"path": value})
+        elif isinstance(value, dict):
+            path = value.get("path") or value.get("uri") or value.get("url")
+            sha256 = value.get("sha256") or value.get("hash")
+            if path or sha256:
+                entry = {}
+                if path:
+                    entry["path"] = path
+                if sha256:
+                    entry["sha256"] = sha256
+                output.append(entry)
+    return output
+
+
+def add_source_files(normalized: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+    files = compact_source_files(data)
+    if files:
+        normalized["sourceFiles"] = files
+    return normalized
 
 
 def normalize_route_origin(data: dict[str, Any]) -> dict[str, Any] | None:
@@ -141,12 +183,12 @@ def normalize_route_origin(data: dict[str, Any]) -> dict[str, Any] | None:
         return None
     parsed_asn = as_int(asn)
     parsed_max = as_int(max_length)
-    return {
+    return add_source_files({
         "asn": parsed_asn if parsed_asn is not None else asn,
         "prefix": str(prefix),
         "maxLength": parsed_max,
         "ta": source_ta(data),
-    }
+    }, data)
 
 
 def normalize_router_key(data: dict[str, Any]) -> dict[str, Any] | None:
@@ -156,12 +198,12 @@ def normalize_router_key(data: dict[str, Any]) -> dict[str, Any] | None:
     if ski is None or key is None or asn is None:
         return None
     parsed_asn = as_int(asn)
-    return {
+    return add_source_files({
         "asn": parsed_asn if parsed_asn is not None else asn,
         "ski": str(ski),
         "routerPublicKey": str(key),
         "ta": source_ta(data),
-    }
+    }, data)
 
 
 def normalize_aspa(data: dict[str, Any]) -> dict[str, Any] | None:
@@ -175,12 +217,12 @@ def normalize_aspa(data: dict[str, Any]) -> dict[str, Any] | None:
         providers = [providers]
     parsed_customer = as_int(customer)
     parsed_providers = [as_int(provider) for provider in providers]
-    return {
+    return add_source_files({
         "customer": parsed_customer if parsed_customer is not None else customer,
         "afi": first_present(data, ("afi", "addressFamily", "address_family")),
         "providers": [provider for provider in parsed_providers if provider is not None],
         "ta": source_ta(data),
-    }
+    }, data)
 
 
 def walk_json(value: Any) -> list[dict[str, Any]]:

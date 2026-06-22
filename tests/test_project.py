@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from aggregate_results import cache_tree_from_archive, main as aggregate_main  # noqa: E402
+from aggregate_results import cache_tree_from_archive, main as aggregate_main, source_files  # noqa: E402
 from check_observability_tools import collect_tooling_status  # noqa: E402
 from rpki_project import load_config, normalize_payloads, payload_counts, read_json, validators, write_json  # noqa: E402
 from run_validator import (  # noqa: E402
@@ -34,6 +34,9 @@ from summarize_tcp_bps import parse_tcptop  # noqa: E402
 class NormalizationTests(unittest.TestCase):
     def test_routinator_all_payloads(self) -> None:
         raw = read_json(ROOT / "tests/fixtures/routinator/raw.json")
+        raw["roas"][0]["source"] = [
+            {"type": "roa", "uri": "rsync://example.net/repository/route.roa", "tal": "arin"}
+        ]
         entry = {
             "id": "routinator-test",
             "validator": "routinator",
@@ -43,6 +46,11 @@ class NormalizationTests(unittest.TestCase):
         normalized = normalize_payloads([raw], entry)
         self.assertEqual(payload_counts(normalized), {"routeOrigins": 1, "routerKeys": 1, "aspas": 1})
         self.assertEqual(normalized["routeOrigins"][0]["asn"], 64496)
+        self.assertEqual(normalized["routeOrigins"][0]["ta"], "arin")
+        self.assertEqual(
+            normalized["routeOrigins"][0]["sourceFiles"],
+            [{"path": "rsync://example.net/repository/route.roa"}],
+        )
         self.assertEqual(normalized["aspas"][0]["providers"], [64497, 64498])
 
     def test_rpki_client_payload_aliases(self) -> None:
@@ -341,6 +349,22 @@ class ObservabilityToolingTests(unittest.TestCase):
 
 
 class AggregateTests(unittest.TestCase):
+    def test_source_files_accepts_source_list(self) -> None:
+        self.assertEqual(
+            source_files(
+                {
+                    "source": [
+                        {"type": "roa", "uri": "rsync://example.net/repository/route.roa"},
+                        {"path": "cache/repository/route.roa", "sha256": "abc123"},
+                    ]
+                }
+            ),
+            [
+                {"path": "rsync://example.net/repository/route.roa", "sha256": None},
+                {"path": "cache/repository/route.roa", "sha256": "abc123"},
+            ],
+        )
+
     def test_fixture_site_build(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

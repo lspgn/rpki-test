@@ -310,6 +310,8 @@ def source_files(item: dict[str, Any]) -> list[dict[str, Any]]:
             if key in source:
                 candidates.append(source)
                 break
+    elif isinstance(source, list):
+        candidates.extend(value for value in source if isinstance(value, (str, dict)))
     output = []
     for value in candidates:
         if isinstance(value, str):
