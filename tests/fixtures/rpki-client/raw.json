@@ -1,0 +1,26 @@
+{
+  "roas": [
+    {
+      "asn": 64496,
+      "prefix": "203.0.113.0/24",
+      "maxLength": 24,
+      "ta": "arin"
+    }
+  ],
+  "brks": [
+    {
+      "asID": 64496,
+      "ski": "001122",
+      "routerPublicKey": "ZmFrZS1rZXk=",
+      "ta": "arin"
+    }
+  ],
+  "vaps": [
+    {
+      "customerAsid": 64496,
+      "afi": "ipv4",
+      "providerAsns": [64497, 64498],
+      "ta": "arin"
+    }
+  ]
+}

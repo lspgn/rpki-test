@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import json
+import shutil
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from aggregate_results import main as aggregate_main  # noqa: E402
+from rpki_project import load_config, normalize_payloads, payload_counts, read_json, validators, write_json  # noqa: E402
+
+
+class NormalizationTests(unittest.TestCase):
+    def test_routinator_all_payloads(self) -> None:
+        raw = read_json(ROOT / "tests/fixtures/routinator/raw.json")
+        entry = {
+            "id": "routinator-test",
+            "validator": "routinator",
+            "version": "test",
+            "payloads": {"routeOrigins": True, "routerKeys": True, "aspas": True},
+        }
+        normalized = normalize_payloads([raw], entry)
+        self.assertEqual(payload_counts(normalized), {"routeOrigins": 1, "routerKeys": 1, "aspas": 1})
+        self.assertEqual(normalized["routeOrigins"][0]["asn"], 64496)
+        self.assertEqual(normalized["aspas"][0]["providers"], [64497, 64498])
+
+    def test_rpki_client_payload_aliases(self) -> None:
+        raw = read_json(ROOT / "tests/fixtures/rpki-client/raw.json")
+        entry = {
+            "id": "rpki-client-test",
+            "validator": "rpki-client",
+            "version": "test",
+            "payloads": {"routeOrigins": True, "routerKeys": True, "aspas": True},
+        }
+        normalized = normalize_payloads([raw], entry)
+        self.assertEqual(payload_counts(normalized), {"routeOrigins": 1, "routerKeys": 1, "aspas": 1})
+        self.assertEqual(normalized["routerKeys"][0]["ski"], "001122")
+
+    def test_fort_aspa_unsupported(self) -> None:
+        roas = read_json(ROOT / "tests/fixtures/fort/roas.json")
+        bgpsec = read_json(ROOT / "tests/fixtures/fort/bgpsec.json")
+        entry = {
+            "id": "fort-test",
+            "validator": "fort",
+            "version": "test",
+            "payloads": {"routeOrigins": True, "routerKeys": True, "aspas": False},
+        }
+        normalized = normalize_payloads([roas, bgpsec], entry)
+        self.assertEqual(payload_counts(normalized), {"routeOrigins": 1, "routerKeys": 1, "aspas": 0})
+        self.assertEqual(normalized["metadata"]["unsupported"], ["aspas"])
+
+
+class ConfigTests(unittest.TestCase):
+    def test_matrix_config_has_pinned_entries(self) -> None:
+        entries = validators(load_config(ROOT / "validators.yml"))
+        self.assertEqual({entry["validator"] for entry in entries}, {"fort", "routinator", "rpki-client"})
+        for entry in entries:
+            self.assertIn("@sha256:", entry["image"])
+            self.assertIn("payloads", entry)
+
+
+class AggregateTests(unittest.TestCase):
+    def test_fixture_site_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results = tmp_path / "results"
+            site = tmp_path / "site"
+            public = tmp_path / "public"
+            shutil.copytree(ROOT / "site", site)
+
+            entries = [
+                ("routinator-test", ROOT / "tests/fixtures/routinator/raw.json", {"routeOrigins": True, "routerKeys": True, "aspas": True}),
+                ("fort-test", ROOT / "tests/fixtures/fort/roas.json", {"routeOrigins": True, "routerKeys": True, "aspas": False}),
+            ]
+            for entry_id, raw_path, payloads in entries:
+                out = results / f"validator-{entry_id}"
+                raw_dir = out / "raw"
+                raw_dir.mkdir(parents=True)
+                shutil.copy2(raw_path, raw_dir / raw_path.name)
+                raw = read_json(raw_path)
+                status = {
+                    "id": entry_id,
+                    "validator": entry_id.split("-")[0],
+                    "version": "test",
+                    "label": entry_id,
+                    "success": True,
+                    "exitCode": 0,
+                    "durationSeconds": 1,
+                    "payloads": payloads,
+                    "unsupported": [name for name, supported in payloads.items() if supported is False],
+                }
+                write_json(out / "status.json", status)
+                write_json(out / "normalized.json", normalize_payloads([raw], {**status, "image": "fixture"}))
+                (out / "stdout.log").write_text("", encoding="utf-8")
+                (out / "stderr.log").write_text("", encoding="utf-8")
+
+            old_argv = sys.argv
+            try:
+                sys.argv = [
+                    "aggregate_results.py",
+                    "--results",
+                    str(results),
+                    "--site",
+                    str(site),
+                    "--output",
+                    str(public),
+                    "--run-id",
+                    "fixture-run",
+                    "--max-site-bytes",
+                    "10000000",
+                ]
+                aggregate_main()
+            finally:
+                sys.argv = old_argv
+
+            manifest = read_json(public / "data/manifest.json")
+            latest = read_json(public / "data/latest.json")
+            self.assertEqual(manifest["latestRun"], "fixture-run")
+            self.assertEqual(len(latest["entries"]), 2)
+            self.assertTrue((public / "index.html").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

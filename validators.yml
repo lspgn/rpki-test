@@ -1,0 +1,54 @@
+{
+  "defaults": {
+    "timeout_seconds": 7200,
+    "payloads": {
+      "routeOrigins": true,
+      "routerKeys": true,
+      "aspas": true
+    }
+  },
+  "validators": [
+    {
+      "id": "routinator-0_15_2",
+      "validator": "routinator",
+      "version": "0.15.2",
+      "label": "Routinator 0.15.2",
+      "image": "nlnetlabs/routinator:latest@sha256:bc57d6e973c3f34fec03ef6fec09e17e405f56f084bf2252a8d54bd2ff3ca597",
+      "timeout_seconds": 7200,
+      "payloads": {
+        "routeOrigins": true,
+        "routerKeys": true,
+        "aspas": true
+      },
+      "script": "mkdir -p /out/cache /out/raw\nroutinator --repository-dir /out/cache/repository --enable-bgpsec --enable-aspa --validation-threads=4 -q vrps --complete -f jsonext -o /out/raw/routinator.json"
+    },
+    {
+      "id": "rpki-client-9_6",
+      "validator": "rpki-client",
+      "version": "9.6",
+      "label": "rpki-client 9.6",
+      "image": "alpine:edge@sha256:9a341ff2287c54b86425cbee0141114d811ae69d88a36019087be6d896cef241",
+      "timeout_seconds": 7200,
+      "payloads": {
+        "routeOrigins": true,
+        "routerKeys": true,
+        "aspas": true
+      },
+      "script": "apk add --no-cache rpki-client=9.6-r0 rsync ca-certificates\nmkdir -p /out/cache /out/db /out/raw\nrpki-client -j -d /out/cache -s 3600 /out/db\ncp /out/db/json /out/raw/rpki-client.json"
+    },
+    {
+      "id": "fort-1_6_8",
+      "validator": "fort",
+      "version": "1.6.8",
+      "label": "Fort 1.6.8",
+      "image": "nicmx/fort-validator:latest@sha256:26766f35d0b90d61e4fb4825e10a03d66c5a249e0d9e685b1ede4a3dad23e1cd",
+      "timeout_seconds": 7200,
+      "payloads": {
+        "routeOrigins": true,
+        "routerKeys": true,
+        "aspas": false
+      },
+      "script": "mkdir -p /out/cache /out/raw /out/tals\nfort --init-tals=true --tal=/out/tals\nfort --mode=standalone --tal=/out/tals --local-repository=/out/cache/repository --output.roa=/out/raw/fort-roas.json --output.bgpsec=/out/raw/fort-bgpsec.json --output.format=json --log.output=console --log.level=info --validation-log.enabled=true --validation-log.output=console --validation-log.level=warning"
+    }
+  ]
+}

@@ -1,0 +1,105 @@
+name: Validate RPKI
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 2 * * *"
+      timezone: "America/Los_Angeles"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rpki-pages
+  cancel-in-progress: false
+
+jobs:
+  matrix:
+    name: Build validator matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate matrix
+        id: matrix
+        run: python3 scripts/generate_matrix.py validators.yml >> "$GITHUB_OUTPUT"
+
+  validate:
+    name: ${{ matrix.label }}
+    needs: matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run validator
+        run: python3 scripts/run_validator.py --config validators.yml --entry-id "${{ matrix.id }}" --output "out/${{ matrix.id }}" || true
+
+      - name: Upload validator result
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validator-${{ matrix.id }}
+          path: out/${{ matrix.id }}
+          if-no-files-found: error
+          retention-days: 7
+
+  aggregate:
+    name: Aggregate results
+    needs: validate
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download validator results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: validator-*
+          path: results
+
+      - name: Configure GitHub Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Fetch previous Pages history
+        env:
+          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
+          FALLBACK_BASE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+        run: |
+          BASE_URL="${PAGES_BASE_URL:-$FALLBACK_BASE_URL}"
+          python3 scripts/fetch_history.py --base-url "$BASE_URL" --output previous-site
+
+      - name: Build Pages site
+        env:
+          MAX_PAGES_BYTES: "996147200"
+        run: |
+          RUN_ID="$(date -u +'%Y%m%dT%H%M%SZ')-${{ github.run_number }}-${{ github.run_attempt }}"
+          python3 scripts/aggregate_results.py --results results --site site --previous previous-site --output public --run-id "$RUN_ID"
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: public
+
+  deploy:
+    name: Deploy GitHub Pages
+    needs: aggregate
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

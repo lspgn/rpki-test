@@ -1,0 +1,8 @@
+[
+  {
+    "asn": "AS64496",
+    "prefix": "203.0.113.0/24",
+    "max_length": 24,
+    "trustAnchor": "arin"
+  }
+]
