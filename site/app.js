@@ -30,6 +30,7 @@ const collapsedTimelineProfiles = new Set();
 const EXPANDED_FLOW_LIMIT = 80;
 let timelineScrollRatio = 0;
 let syncingTimelineScroll = false;
+const timelineCrosshairs = new Set();
 
 const formatter = new Intl.NumberFormat();
 const byteFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
@@ -347,6 +348,86 @@ function addTooltipHandlers(node, lines, className = "") {
   node.addEventListener("mouseleave", hideTimelineTooltip);
 }
 
+function svgPointerPoint(svg, event) {
+  const rect = svg.getBoundingClientRect();
+  const viewBox = svg.viewBox.baseVal;
+  if (!rect.width || !rect.height || !viewBox.width || !viewBox.height) {
+    return null;
+  }
+  return {
+    x: viewBox.x + ((event.clientX - rect.left) / rect.width) * viewBox.width,
+    y: viewBox.y + ((event.clientY - rect.top) / rect.height) * viewBox.height,
+  };
+}
+
+function snapTimelineOffset(offsetSeconds, snapOffsets, duration) {
+  if (!snapOffsets.length) {
+    return Math.max(0, Math.min(duration, offsetSeconds));
+  }
+  return snapOffsets.reduce((closest, offset) => {
+    return Math.abs(offset - offsetSeconds) < Math.abs(closest - offsetSeconds) ? offset : closest;
+  }, snapOffsets[0]);
+}
+
+function hideTimelineCrosshairs() {
+  for (const chart of [...timelineCrosshairs]) {
+    if (!chart.svg.isConnected) {
+      timelineCrosshairs.delete(chart);
+      continue;
+    }
+    chart.group.classList.remove("is-visible");
+  }
+}
+
+function showTimelineCrosshairs(offsetSeconds) {
+  for (const chart of [...timelineCrosshairs]) {
+    if (!chart.svg.isConnected) {
+      timelineCrosshairs.delete(chart);
+      continue;
+    }
+    const x = chart.xForOffset(offsetSeconds);
+    if (x < chart.bounds.left || x > chart.bounds.right) {
+      chart.group.classList.remove("is-visible");
+      continue;
+    }
+    chart.line.setAttribute("x1", x.toFixed(1));
+    chart.line.setAttribute("x2", x.toFixed(1));
+    chart.group.classList.add("is-visible");
+  }
+}
+
+function installTimelineCrosshair(svg, bounds, options) {
+  const group = svgElement("g", { class: "timeline-crosshair", "aria-hidden": "true" });
+  const line = svgElement("line", { y1: bounds.top, y2: bounds.bottom, class: "timeline-crosshair-line" });
+  group.append(line);
+  svg.append(group);
+
+  timelineCrosshairs.add({
+    svg,
+    group,
+    line,
+    bounds,
+    xForOffset: options.xForOffset,
+  });
+
+  svg.addEventListener("mousemove", (event) => {
+    const point = svgPointerPoint(svg, event);
+    if (
+      !point
+      || point.x < bounds.left
+      || point.x > bounds.right
+      || point.y < bounds.top
+      || point.y > bounds.bottom
+    ) {
+      hideTimelineCrosshairs();
+      return;
+    }
+    const offsetSeconds = ((point.x - bounds.left) / (bounds.right - bounds.left)) * options.duration;
+    showTimelineCrosshairs(snapTimelineOffset(offsetSeconds, options.snapOffsets, options.duration));
+  });
+  svg.addEventListener("mouseleave", hideTimelineCrosshairs);
+}
+
 function groupedCounts(items, key, label, limit = 8) {
   const counts = new Map();
   for (const item of items || []) {
@@ -538,6 +619,9 @@ function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
   const height = laneTop + laneHeight * lanes.length + 34;
   const plotWidth = width - left - right;
   const xForOffset = (offset) => left + (Math.max(0, offset || 0) / duration) * plotWidth;
+  const snapOffsets = buckets.length
+    ? buckets.map((bucket) => ((bucket.startOffsetSeconds || 0) + (bucket.endOffsetSeconds || ((bucket.startOffsetSeconds || 0) + bucketSeconds))) / 2)
+    : Array.from({ length: Math.max(1, Math.ceil(duration / bucketSeconds)) }, (_, index) => index * bucketSeconds + bucketSeconds / 2);
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.style.minHeight = `${height}px`;
   svg.style.minWidth = `${width}px`;
@@ -550,6 +634,13 @@ function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
   flowLabelNode.textContent = "Flows";
   svg.append(flowLabelNode);
   svg.append(svgElement("rect", { x: left, y: flowTop, width: plotWidth, height: flowHeight, class: "flow-lane" }));
+  svg.append(svgElement("rect", {
+    x: left,
+    y: flowTop,
+    width: plotWidth,
+    height: height - 24 - flowTop,
+    class: "timeline-crosshair-capture",
+  }));
   const verticalTicks = 6;
   for (let index = 0; index <= verticalTicks; index += 1) {
     const x = left + (plotWidth * index) / verticalTicks;
@@ -773,6 +864,7 @@ function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
   });
 
   svg.append(svgElement("line", { x1: left, x2: left, y1: flowTop, y2: height - 24, class: "axis" }));
+  installTimelineCrosshair(svg, { left, right: width - right, top: flowTop, bottom: height - 24 }, { duration, snapOffsets, xForOffset });
 }
 
 function renderLogPanel(timeline) {
@@ -911,6 +1003,7 @@ function attachTimelineScrollSync() {
 
 function renderAllTimelines() {
   const container = document.querySelector("#timelines");
+  timelineCrosshairs.clear();
   if (!currentSummary?.entries?.length) {
     container.replaceChildren();
     document.querySelector("#timeline-summary").textContent = "";
