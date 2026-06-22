@@ -430,6 +430,15 @@ a:hover {
   opacity: 1;
 }
 
+.flow-heat {
+  fill: #2f8072;
+  cursor: help;
+}
+
+.flow-heat:hover {
+  opacity: 1;
+}
+
 .flow-label {
   fill: var(--muted);
   font-size: 10px;
@@ -464,6 +473,8 @@ a:hover {
   z-index: 20;
   display: none;
   max-width: min(440px, calc(100vw - 32px));
+  max-height: min(70vh, 520px);
+  overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.97);

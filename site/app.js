@@ -25,6 +25,8 @@ const fileChunkCache = new Map();
 const timelineCache = new Map();
 const timelineByValidator = new Map();
 const expandedFlowCharts = new Set();
+const COLLAPSED_FLOW_BINS = 96;
+const EXPANDED_FLOW_LIMIT = 80;
 
 const formatter = new Intl.NumberFormat();
 const byteFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
@@ -296,6 +298,7 @@ function groupedByBucket(items, bucketSeconds, offsetValue) {
   return [...groups.entries()]
     .map(([index, values]) => ({
       index,
+      bucketSeconds: bucketSeconds || 10,
       offsetSeconds: index * (bucketSeconds || 10),
       values,
     }))
@@ -317,8 +320,12 @@ function showTimelineTooltip(event, lines) {
     return div;
   }));
   node.classList.add("is-visible");
-  node.style.left = `${event.clientX + 14}px`;
-  node.style.top = `${event.clientY + 14}px`;
+  const margin = 14;
+  const rect = node.getBoundingClientRect();
+  const left = Math.min(event.clientX + margin, window.innerWidth - rect.width - margin);
+  const top = Math.min(event.clientY + margin, window.innerHeight - rect.height - margin);
+  node.style.left = `${Math.max(margin, left)}px`;
+  node.style.top = `${Math.max(margin, top)}px`;
 }
 
 function hideTimelineTooltip() {
@@ -333,23 +340,45 @@ function addTooltipHandlers(node, lines) {
   node.addEventListener("mouseleave", hideTimelineTooltip);
 }
 
+function groupedCounts(items, key, label, limit = 8) {
+  const counts = new Map();
+  for (const item of items || []) {
+    const value = key(item) || "unknown";
+    counts.set(value, (counts.get(value) || 0) + 1);
+  }
+  const rows = [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, limit)
+    .map(([value, count]) => `${formatCount(count)} ${label}: ${value}`);
+  const remaining = Math.max(0, counts.size - limit);
+  return remaining ? [...rows, `+${formatCount(remaining)} more ${label} groups`] : rows;
+}
+
 function eventLines(group) {
   const stdout = group.values.filter((item) => item.stream === "stdout").length;
   const stderr = group.values.filter((item) => item.stream === "stderr").length;
+  const byMessage = groupedCounts(
+    group.values,
+    (item) => `${item.stream}: ${item.message || ""}`,
+    "logs",
+  );
   return [
-    `${formatOffset(group.offsetSeconds)} logs`,
+    `${formatOffset(group.offsetSeconds)}-${formatOffset(group.offsetSeconds + group.bucketSeconds)} logs`,
     `${formatCount(stdout)} stdout / ${formatCount(stderr)} stderr`,
-    ...group.values.slice(0, 8).map((item) => `${item.stream}: ${item.message || ""}`),
-    ...(group.values.length > 8 ? [`+${formatCount(group.values.length - 8)} more`] : []),
+    ...byMessage,
   ];
 }
 
 function dnsLines(group) {
+  const byQuery = groupedCounts(
+    group.values,
+    (item) => `${item.query || "unknown"} -> ${(item.answers || []).slice(0, 3).join(", ") || "none"}`,
+    "queries",
+  );
   return [
-    `${formatOffset(group.offsetSeconds)} DNS`,
+    `${formatOffset(group.offsetSeconds)}-${formatOffset(group.offsetSeconds + group.bucketSeconds)} DNS`,
     `${formatCount(group.values.length)} queries`,
-    ...group.values.slice(0, 8).map((item) => `${item.query || "unknown"} -> ${(item.answers || []).join(", ") || "none"}`),
-    ...(group.values.length > 8 ? [`+${formatCount(group.values.length - 8)} more`] : []),
+    ...byQuery,
   ];
 }
 
@@ -383,6 +412,63 @@ function flowLabel(flow) {
   return names ? `${remote} ${names}` : remote;
 }
 
+function flowTotalBytes(flow) {
+  return flow?.totalBytes || ((flow?.totalRxBytes || 0) + (flow?.totalTxBytes || 0));
+}
+
+function flowHeatBins(flows, duration, binCount = COLLAPSED_FLOW_BINS) {
+  const count = Math.max(1, binCount);
+  const secondsPerBin = Math.max(1, duration / count);
+  const bins = Array.from({ length: count }, (_, index) => ({
+    index,
+    start: index * secondsPerBin,
+    end: Math.min(duration, (index + 1) * secondsPerBin),
+    bytes: 0,
+    flows: new Set(),
+    topFlows: new Map(),
+  }));
+  for (const flow of flows || []) {
+    const samples = Array.isArray(flow.samples) ? flow.samples : [];
+    if (!samples.length) {
+      const first = Math.max(0, flow.firstSeenOffsetSeconds || 0);
+      const last = Math.max(first, flow.lastSeenOffsetSeconds || first);
+      const startIndex = Math.min(count - 1, Math.floor(first / secondsPerBin));
+      const endIndex = Math.min(count - 1, Math.floor(last / secondsPerBin));
+      const bytes = flowTotalBytes(flow);
+      for (let index = startIndex; index <= endIndex; index += 1) {
+        bins[index].bytes += bytes / Math.max(1, endIndex - startIndex + 1);
+        bins[index].flows.add(flow);
+        bins[index].topFlows.set(flow, (bins[index].topFlows.get(flow) || 0) + bytes);
+      }
+      continue;
+    }
+    for (const sample of samples) {
+      const offset = Math.max(0, sample.offsetSeconds || flow.firstSeenOffsetSeconds || 0);
+      const index = Math.min(count - 1, Math.floor(offset / secondsPerBin));
+      const bytes = (sample.rxBytes || 0) + (sample.txBytes || 0);
+      bins[index].bytes += bytes;
+      bins[index].flows.add(flow);
+      bins[index].topFlows.set(flow, (bins[index].topFlows.get(flow) || 0) + bytes);
+    }
+  }
+  return bins.map((bin) => ({
+    ...bin,
+    flowCount: bin.flows.size,
+    topFlows: [...bin.topFlows.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 5),
+  }));
+}
+
+function heatBinLines(bin) {
+  return [
+    `${formatOffset(bin.start)}-${formatOffset(bin.end)} flows`,
+    `Flow bytes: ${formatBytes(bin.bytes)}`,
+    `Flows: ${formatCount(bin.flowCount)}`,
+    ...bin.topFlows.map(([flow, bytes]) => `${formatBytes(bytes)} ${flowLabel(flow)}`),
+  ];
+}
+
 function renderTimelineChart(svg, timeline, entry) {
   svg.replaceChildren();
   const buckets = timeline?.buckets || [];
@@ -400,23 +486,26 @@ function renderTimelineChart(svg, timeline, entry) {
   const configs = timelineSeriesConfig(bucketSeconds);
   const enabled = selectedTimelineSeries().filter((key) => configs[key]);
   const lanes = enabled.length ? enabled : ["cpu"];
-  const width = 980;
+  const duration = timelineDuration(timeline);
+  const width = Math.min(2200, Math.max(980, Math.round(duration * 1.35)));
   const left = 112;
   const right = 24;
   const top = 24;
   const expanded = expandedFlowCharts.has(entry?.id);
-  const visibleFlows = expanded ? flows : flows.slice(0, 12);
+  const visibleFlows = expanded ? flows.slice(0, EXPANDED_FLOW_LIMIT) : [];
   const flowTop = top + 12;
-  const flowRowHeight = expanded ? 13 : 8;
-  const flowHeight = flows.length ? Math.min(expanded ? 260 : 86, Math.max(34, visibleFlows.length * flowRowHeight + 18)) : 28;
+  const flowRowHeight = 13;
+  const flowHeight = flows.length
+    ? (expanded ? Math.max(54, visibleFlows.length * flowRowHeight + 24) : 78)
+    : 28;
   const laneTop = flowTop + flowHeight + 22;
   const laneHeight = 66;
   const height = laneTop + laneHeight * lanes.length + 34;
   const plotWidth = width - left - right;
-  const duration = timelineDuration(timeline);
   const xForOffset = (offset) => left + (Math.max(0, offset || 0) / duration) * plotWidth;
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.style.minHeight = `${height}px`;
+  svg.style.minWidth = `${width}px`;
 
   const title = svgElement("text", { x: 18, y: 18, class: "timeline-card-title" });
   title.textContent = entry?.label || "Validator";
@@ -430,42 +519,70 @@ function renderTimelineChart(svg, timeline, entry) {
   for (let index = 0; index <= verticalTicks; index += 1) {
     const x = left + (plotWidth * index) / verticalTicks;
     svg.append(svgElement("line", { x1: x, x2: x, y1: flowTop, y2: height - 24, class: "grid-line vertical" }));
+    const label = svgElement("text", { x: x + 3, y: height - 8, class: "axis-label" });
+    label.textContent = formatOffset((duration * index) / verticalTicks);
+    svg.append(label);
   }
-  const maxFlowBytes = Math.max(...flows.map((flow) => flow.totalBytes || 0), 1);
-  visibleFlows.forEach((flow, index) => {
-    const y = flowTop + 10 + index * flowRowHeight;
-    const start = flow.firstSeenOffsetSeconds || 0;
-    const end = Math.max(flow.lastSeenOffsetSeconds || start, start + 0.6);
-    const x = xForOffset(start);
-    const barWidth = Math.max(3, xForOffset(end) - x);
-    const heat = Math.max(0.18, Math.min(0.9, (flow.totalBytes || 0) / maxFlowBytes));
-    const bar = svgElement("rect", {
-      x,
-      y,
-      width: barWidth,
-      height: expanded ? 9 : 6,
-      rx: 2,
-      class: "flow-bar",
-      opacity: heat.toFixed(2),
+  const maxFlowBytes = Math.max(...flows.map(flowTotalBytes), 1);
+  if (!expanded && flows.length) {
+    const bins = flowHeatBins(flows, duration);
+    const maxBinBytes = Math.max(...bins.map((bin) => bin.bytes), 1);
+    bins.forEach((bin) => {
+      if (!bin.bytes) {
+        return;
+      }
+      const x = xForOffset(bin.start);
+      const binWidth = Math.max(2, xForOffset(bin.end) - x);
+      const intensity = Math.max(0.16, Math.min(0.9, Math.sqrt(bin.bytes / maxBinBytes)));
+      const barHeight = Math.max(5, intensity * (flowHeight - 18));
+      const heat = svgElement("rect", {
+        x,
+        y: flowTop + flowHeight - 7 - barHeight,
+        width: binWidth,
+        height: barHeight,
+        class: "flow-heat",
+        opacity: intensity.toFixed(2),
+      });
+      addTooltipHandlers(heat, heatBinLines(bin));
+      svg.append(heat);
     });
-    addTooltipHandlers(bar, [
-      flowLabel(flow),
-      `${formatOffset(start)}-${formatOffset(end)}`,
-      `Total: ${formatBytes(flow.totalBytes || 0)}`,
-      `RX/TX: ${formatBytes(flow.totalRxBytes)} / ${formatBytes(flow.totalTxBytes)}`,
-      `Packets: ${formatCount(flow.packetCount || 0)}`,
-    ]);
-    svg.append(bar);
-    if (expanded) {
-      const label = svgElement("text", { x: Math.min(x + barWidth + 5, width - right - 160), y: y + 8, class: "flow-label" });
-      label.textContent = flowLabel(flow).slice(0, 42);
+    const hint = svgElement("text", { x: left, y: flowTop + 17, class: "flow-label" });
+    hint.textContent = `${formatCount(flows.length)} flows, heat by exchanged bytes`;
+    svg.append(hint);
+  } else {
+    visibleFlows.forEach((flow, index) => {
+      const y = flowTop + 10 + index * flowRowHeight;
+      const start = flow.firstSeenOffsetSeconds || 0;
+      const end = Math.max(flow.lastSeenOffsetSeconds || start, start + 0.6);
+      const x = xForOffset(start);
+      const barWidth = Math.max(3, xForOffset(end) - x);
+      const heat = Math.max(0.18, Math.min(0.9, flowTotalBytes(flow) / maxFlowBytes));
+      const bar = svgElement("rect", {
+        x,
+        y,
+        width: barWidth,
+        height: 9,
+        rx: 2,
+        class: "flow-bar",
+        opacity: heat.toFixed(2),
+      });
+      addTooltipHandlers(bar, [
+        flowLabel(flow),
+        `${formatOffset(start)}-${formatOffset(end)}`,
+        `Total: ${formatBytes(flowTotalBytes(flow))}`,
+        `RX/TX: ${formatBytes(flow.totalRxBytes)} / ${formatBytes(flow.totalTxBytes)}`,
+        `Packets: ${formatCount(flow.packetCount || 0)}`,
+      ]);
+      svg.append(bar);
+      const label = svgElement("text", { x: Math.min(x + barWidth + 5, width - right - 210), y: y + 8, class: "flow-label" });
+      label.textContent = flowLabel(flow).slice(0, 58);
       svg.append(label);
+    });
+    if (flows.length > visibleFlows.length) {
+      const more = svgElement("text", { x: left, y: flowTop + flowHeight - 4, class: "lane-max" });
+      more.textContent = `Showing top ${formatCount(visibleFlows.length)} by bytes; +${formatCount(flows.length - visibleFlows.length)} more`;
+      svg.append(more);
     }
-  });
-  if (!expanded && flows.length > visibleFlows.length) {
-    const more = svgElement("text", { x: left, y: flowTop + flowHeight - 4, class: "lane-max" });
-    more.textContent = `+${formatter.format(flows.length - visibleFlows.length)} more flows`;
-    svg.append(more);
   }
 
   lanes.forEach((key, laneIndex) => {
@@ -550,11 +667,7 @@ function renderTimelineChart(svg, timeline, entry) {
   }
   svg.append(markerGroup);
 
-  const startLabel = svgElement("text", { x: left, y: height - 8, class: "axis-label" });
-  startLabel.textContent = "0:00";
-  const endLabel = svgElement("text", { x: width - right - 48, y: height - 8, class: "axis-label" });
-  endLabel.textContent = formatOffset(duration);
-  svg.append(startLabel, endLabel);
+  svg.append(svgElement("line", { x1: left, x2: left, y1: flowTop, y2: height - 24, class: "axis" }));
 }
 
 function renderTimelineCard(entry, timeline) {
