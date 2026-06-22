@@ -6,9 +6,11 @@ entry and publishes these artifacts:
 - `resource-usage.json`: calculated CPU, memory, PID, and network summary
 - `docker-stats.jsonl`: raw `docker stats --no-stream --format '{{json .}}'` samples
 - `ebpf/tooling.json` and `ebpf/tooling.log`: non-invasive preflight showing whether capture tools were available
+- `ebpf/capture-status.json` and `ebpf/capture.log`: capture process status and startup/cleanup log
 - `ebpf/dns-queries.tsv`: derived DNS query report, when collected
 - `ebpf/tcp-flows.json`: per-flow RX/TX bytes plus min/max rates over time, when collected
 - `ebpf/tcp-bps.log` and `ebpf/tcp-life.log`: source byte/connection reports, when collected
+- `ebpf/syscalls.log` and `ebpf/memory-allocations.log`: syscall and allocation traces, when collected
 
 The dashboard surfaces peak processor cores and peak RAM for each validator.
 Use `resource-usage.json` as the sizing input for routine capacity planning:
@@ -21,8 +23,9 @@ Use `resource-usage.json` as the sizing input for routine capacity planning:
 
 ## Privileged eBPF Capture
 
-Run this on a disposable Linux host or self-hosted GitHub runner. It requires
-root privileges and kernel tracing support.
+The GitHub Actions workflow attempts this automatically when the tooling
+preflight reports `canAttemptCapture=true`. It requires passwordless `sudo`
+or root privileges plus kernel tracing support.
 
 Install tools on Ubuntu:
 

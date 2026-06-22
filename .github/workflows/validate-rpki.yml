@@ -49,7 +49,7 @@ jobs:
           cat "out/${{ matrix.id }}/ebpf/tooling.log"
 
       - name: Run validator
-        run: python3 scripts/run_validator.py --config validators.yml --entry-id "${{ matrix.id }}" --output "out/${{ matrix.id }}" || true
+        run: python3 scripts/run_validator.py --config validators.yml --entry-id "${{ matrix.id }}" --output "out/${{ matrix.id }}" --capture-observability || true
 
       - name: Ensure validator result metadata
         if: always()
@@ -127,10 +127,15 @@ jobs:
             out/${{ matrix.id }}/docker-stats.jsonl
             out/${{ matrix.id }}/ebpf/tooling.json
             out/${{ matrix.id }}/ebpf/tooling.log
+            out/${{ matrix.id }}/ebpf/capture-status.json
+            out/${{ matrix.id }}/ebpf/capture.log
+            out/${{ matrix.id }}/ebpf/tcpdump.log
             out/${{ matrix.id }}/ebpf/dns-queries.tsv
             out/${{ matrix.id }}/ebpf/tcp-bps.log
             out/${{ matrix.id }}/ebpf/tcp-flows.json
             out/${{ matrix.id }}/ebpf/tcp-life.log
+            out/${{ matrix.id }}/ebpf/syscalls.log
+            out/${{ matrix.id }}/ebpf/memory-allocations.log
             out/${{ matrix.id }}/*.log
             out/${{ matrix.id }}/normalized.json
             out/${{ matrix.id }}/raw/*.json

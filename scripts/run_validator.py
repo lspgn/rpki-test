@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tarfile
@@ -27,6 +29,7 @@ from rpki_project import (
     utc_now,
     write_json,
 )
+from summarize_tcp_bps import parse_tcptop
 
 
 BYTE_UNITS = {
@@ -233,7 +236,216 @@ class DockerStatsSampler:
         return summary
 
 
-def run_with_tee(command: list[str], timeout: int, sampler: DockerStatsSampler | None = None) -> tuple[int, str, str, bool]:
+def sudo_command(command: list[str]) -> list[str]:
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return command
+    return ["sudo", "-n", *command]
+
+
+def read_tooling_status(output_dir: Path) -> dict[str, Any] | None:
+    path = output_dir / "ebpf" / "tooling.json"
+    if not path.exists():
+        return None
+    try:
+        return read_json(path)
+    except Exception:  # noqa: BLE001 - capture setup should never fail validation.
+        return None
+
+
+class ObservabilityCapture:
+    def __init__(self, container_name: str, output_dir: Path, enabled: bool) -> None:
+        self.container_name = container_name
+        self.output_dir = output_dir
+        self.enabled = enabled
+        self.ebpf_dir = output_dir / "ebpf"
+        self.log_path = self.ebpf_dir / "capture.log"
+        self.processes: list[tuple[str, subprocess.Popen[Any], Any]] = []
+        self.errors: list[str] = []
+        self.container_pid: int | None = None
+        self.started = False
+
+    def log(self, message: str) -> None:
+        self.ebpf_dir.mkdir(parents=True, exist_ok=True)
+        with self.log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{utc_now()} {message}\n")
+
+    def inspect_container_pid(self) -> int | None:
+        try:
+            completed = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Pid}}", self.container_name],
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.log(f"docker inspect failed: {exc}")
+            return None
+        if completed.returncode != 0:
+            return None
+        try:
+            pid = int(completed.stdout.strip())
+        except ValueError:
+            return None
+        return pid if pid > 0 else None
+
+    def wait_for_container_pid(self, timeout_seconds: float = 120.0) -> int | None:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            pid = self.inspect_container_pid()
+            if pid is not None:
+                return pid
+            time.sleep(0.5)
+        return None
+
+    def start_process(self, name: str, command: list[str], output: Path) -> None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        handle = output.open("w", encoding="utf-8")
+        self.log(f"starting {name}: {' '.join(shlex.quote(part) for part in command)}")
+        try:
+            process = subprocess.Popen(
+                command,
+                text=True,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - capture failures are non-fatal.
+            handle.close()
+            self.errors.append(f"{name}: {exc}")
+            self.log(f"failed {name}: {exc}")
+            return
+        self.processes.append((name, process, handle))
+
+    def start(self) -> None:
+        self.ebpf_dir.mkdir(parents=True, exist_ok=True)
+        self.log("capture setup started")
+        if not self.enabled:
+            self.log("capture disabled")
+            return
+        tooling = read_tooling_status(self.output_dir)
+        if tooling is not None and not tooling.get("canAttemptCapture", False):
+            self.log("capture skipped because tooling preflight reported canAttemptCapture=False")
+            return
+
+        pid = self.wait_for_container_pid()
+        if pid is None:
+            self.errors.append("container PID was not available")
+            self.log("capture skipped because container PID was not available")
+            return
+        self.container_pid = pid
+        self.started = True
+        self.log(f"container pid={pid}")
+
+        self.start_process(
+            "dns-pcap",
+            sudo_command(["tcpdump", "-i", "any", "-nn", "-s", "0", "-w", str(self.ebpf_dir / "dns.pcap"), "udp", "port", "53", "or", "tcp", "port", "53"]),
+            self.ebpf_dir / "tcpdump.log",
+        )
+        self.start_process("tcp-bps", sudo_command(["tcptop-bpfcc", "-p", str(pid), "-C", "1"]), self.ebpf_dir / "tcp-bps.log")
+        self.start_process("tcp-life", sudo_command(["tcplife-bpfcc", "-p", str(pid), "-T"]), self.ebpf_dir / "tcp-life.log")
+        self.start_process("syscalls", sudo_command(["syscount-bpfcc", "-p", str(pid), "-i", "10"]), self.ebpf_dir / "syscalls.log")
+        self.start_process("memory-allocations", sudo_command(["memleak-bpfcc", "-p", str(pid), "-a", "-o", "10"]), self.ebpf_dir / "memory-allocations.log")
+
+    def stop_processes(self) -> None:
+        for name, process, handle in self.processes:
+            if process.poll() is None:
+                self.log(f"stopping {name}")
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except OSError as exc:
+                    self.log(f"failed to signal {name}: {exc}")
+            try:
+                process.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                self.log(f"killing {name}")
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError as exc:
+                    self.log(f"failed to kill {name}: {exc}")
+                process.wait(timeout=5)
+            handle.close()
+            self.log(f"{name} exit={process.returncode}")
+
+    def derive_dns_report(self) -> None:
+        pcap = self.ebpf_dir / "dns.pcap"
+        output = self.ebpf_dir / "dns-queries.tsv"
+        if not pcap.exists() or pcap.stat().st_size == 0:
+            self.log("dns report skipped because dns.pcap is missing or empty")
+            return
+        command = [
+            "tshark",
+            "-r",
+            str(pcap),
+            "-Y",
+            "dns",
+            "-T",
+            "fields",
+            "-e",
+            "frame.time_epoch",
+            "-e",
+            "ip.src",
+            "-e",
+            "ip.dst",
+            "-e",
+            "udp.srcport",
+            "-e",
+            "udp.dstport",
+            "-e",
+            "dns.qry.name",
+        ]
+        try:
+            with output.open("w", encoding="utf-8") as handle:
+                completed = subprocess.run(command, text=True, stdout=handle, stderr=subprocess.PIPE, timeout=120, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.errors.append(f"tshark: {exc}")
+            self.log(f"tshark failed: {exc}")
+            return
+        if completed.returncode != 0:
+            self.errors.append(f"tshark: {completed.stderr.strip()}")
+            self.log(f"tshark failed: {completed.stderr.strip()}")
+        else:
+            self.log(f"wrote {output.name}")
+
+    def derive_tcp_flow_report(self) -> None:
+        source = self.ebpf_dir / "tcp-bps.log"
+        output = self.ebpf_dir / "tcp-flows.json"
+        if not source.exists() or source.stat().st_size == 0:
+            self.log("tcp flow report skipped because tcp-bps.log is missing or empty")
+            return
+        try:
+            summary = parse_tcptop(source.read_text(encoding="utf-8", errors="replace"), interval_seconds=1.0)
+            summary["generatedAt"] = utc_now()
+            summary["source"] = source.name
+            write_json(output, summary)
+            self.log(f"wrote {output.name}")
+        except Exception as exc:  # noqa: BLE001 - keep validation status independent of report parsing.
+            self.errors.append(f"tcp flow summary: {exc}")
+            self.log(f"tcp flow summary failed: {exc}")
+
+    def stop(self) -> dict[str, Any]:
+        self.stop_processes()
+        self.derive_dns_report()
+        self.derive_tcp_flow_report()
+        summary = {
+            "enabled": self.enabled,
+            "started": self.started,
+            "containerPid": self.container_pid,
+            "processes": [{"name": name, "exitCode": process.returncode} for name, process, _handle in self.processes],
+            "errors": self.errors,
+            "generatedAt": utc_now(),
+        }
+        write_json(self.ebpf_dir / "capture-status.json", summary)
+        self.log("capture finished")
+        return summary
+
+
+def run_with_tee(
+    command: list[str],
+    timeout: int,
+    sampler: DockerStatsSampler | None = None,
+    capture: ObservabilityCapture | None = None,
+) -> tuple[int, str, str, bool]:
     print("::group::Validator command", flush=True)
     print(" ".join(shlex.quote(part) for part in command), flush=True)
     print("::endgroup::", flush=True)
@@ -263,6 +475,12 @@ def run_with_tee(command: list[str], timeout: int, sampler: DockerStatsSampler |
     stderr_thread.start()
     if sampler is not None:
         sampler.start()
+    if capture is not None:
+        try:
+            capture.start()
+        except Exception as exc:  # noqa: BLE001 - observability must not change validator behavior.
+            capture.errors.append(f"capture start: {exc}")
+            capture.log(f"capture start failed: {exc}")
 
     timed_out = False
     try:
@@ -281,6 +499,12 @@ def run_with_tee(command: list[str], timeout: int, sampler: DockerStatsSampler |
     stderr_thread.join(timeout=10)
     if sampler is not None:
         sampler.stop()
+    if capture is not None:
+        try:
+            capture.stop()
+        except Exception as exc:  # noqa: BLE001 - observability must not change validator behavior.
+            capture.errors.append(f"capture stop: {exc}")
+            capture.log(f"capture stop failed: {exc}")
     return returncode, "".join(stdout_chunks), "".join(stderr_chunks), timed_out
 
 
@@ -332,6 +556,7 @@ def main() -> None:
     parser.add_argument("--config", default="validators.yml")
     parser.add_argument("--entry-id", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--capture-observability", action="store_true")
     args = parser.parse_args()
 
     entry = find_validator(load_config(args.config), args.entry_id)
@@ -349,9 +574,15 @@ def main() -> None:
         container_name = f"rpki-{entry['id']}-{int(time.time())}"
         command = docker_command(entry, output_dir, work_dir, container_name)
         stats_sampler = DockerStatsSampler(container_name)
+        capture = ObservabilityCapture(container_name, output_dir, args.capture_observability)
         started_at = utc_now()
         started = time.monotonic()
-        returncode, stdout, stderr, timed_out = run_with_tee(command, int(entry.get("timeout_seconds", 7200)), stats_sampler)
+        returncode, stdout, stderr, timed_out = run_with_tee(
+            command,
+            int(entry.get("timeout_seconds", 7200)),
+            stats_sampler,
+            capture,
+        )
         resource_usage = stats_sampler.write(output_dir)
         permission_returncode, permission_output = normalize_permissions(entry, output_dir, work_dir)
         if permission_output:
