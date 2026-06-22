@@ -45,7 +45,7 @@ jobs:
 
       - name: Check observability tooling
         run: |
-          python3 scripts/check_observability_tools.py --output "out/${{ matrix.id }}/ebpf"
+          python3 scripts/observability.py check-tools --output "out/${{ matrix.id }}/ebpf"
           cat "out/${{ matrix.id }}/ebpf/tooling.log"
 
       - name: Run validator
