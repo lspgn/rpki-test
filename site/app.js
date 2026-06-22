@@ -11,10 +11,16 @@ let currentSummary = null;
 let currentView = "validators";
 let resourcePayload = "routeOrigins";
 let resourceReport = null;
+let resourceRows = [];
+let resourcePage = 0;
 let fileTree = null;
+let fileRows = [];
+let filePage = 0;
 let fileValidator = null;
 const resourceCache = new Map();
+const resourceChunkCache = new Map();
 const fileCache = new Map();
+const fileChunkCache = new Map();
 
 const formatter = new Intl.NumberFormat();
 const byteFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
@@ -146,6 +152,21 @@ function setView(view) {
   }
 }
 
+function decodeResourceRow(row) {
+  if (!Array.isArray(row)) {
+    return row;
+  }
+  return {
+    key: row[0],
+    label: row[1],
+    seenBy: row[2] || [],
+    missingFrom: row[3] || [],
+    divergent: Boolean(row[4]),
+    sourceFiles: row[5] || [],
+    object: row[6] || {},
+  };
+}
+
 function resourceText(row) {
   const files = (row.sourceFiles || []).map((file) => `${file.path || ""} ${file.sha256 || ""}`).join(" ");
   return `${row.label || ""} ${row.key || ""} ${(row.seenBy || []).join(" ")} ${(row.missingFrom || []).join(" ")} ${files}`.toLowerCase();
@@ -173,11 +194,12 @@ function renderResources() {
   if (!resourceReport) {
     tbody.replaceChildren(emptyRow(4, "Load a resource report to inspect objects."));
     document.querySelector("#resource-count").textContent = "";
+    document.querySelector("#resource-page").textContent = "";
     return;
   }
   const query = document.querySelector("#resource-search").value.trim().toLowerCase();
   const sort = document.querySelector("#resource-sort").value;
-  let rows = resourceReport.rows || [];
+  let rows = resourceRows;
   if (query) {
     rows = rows.filter((row) => resourceText(row).includes(query));
   }
@@ -186,9 +208,13 @@ function renderResources() {
   const excluded = (resourceReport.excludedValidators || [])
     .map((validator) => `${validator.label || validator.id}: ${validator.reason}`)
     .join("; ");
+  const pages = resourceReport.chunks?.length || 0;
   document.querySelector("#resource-count").textContent =
-    `${formatter.format(rows.length)} matching from ${formatter.format(resourceReport.totalObjects)} ${payloadLabels[resourcePayload]} objects`
+    `${formatter.format(rows.length)} matching in this page from ${formatter.format(resourceReport.totalObjects)} ${payloadLabels[resourcePayload]} objects`
     + (excluded ? `; excluded: ${excluded}` : "");
+  document.querySelector("#resource-page").textContent = pages ? `${resourcePage + 1} / ${pages}` : "";
+  document.querySelector("#resource-prev").disabled = resourcePage <= 0;
+  document.querySelector("#resource-next").disabled = !pages || resourcePage >= pages - 1;
   const fragment = document.createDocumentFragment();
   for (const item of shown) {
     const row = document.createElement("tr");
@@ -212,6 +238,22 @@ function renderResources() {
   tbody.replaceChildren(fragment);
 }
 
+async function loadResourceChunk() {
+  if (!resourceReport?.chunks?.length) {
+    resourceRows = [];
+    renderResources();
+    return;
+  }
+  const chunk = resourceReport.chunks[resourcePage];
+  if (!resourceChunkCache.has(chunk.path)) {
+    document.querySelector("#resources").replaceChildren(emptyRow(4, `Loading page ${resourcePage + 1}...`));
+    const data = await fetchJson(chunk.path);
+    resourceChunkCache.set(chunk.path, (data.rows || []).map(decodeResourceRow));
+  }
+  resourceRows = resourceChunkCache.get(chunk.path);
+  renderResources();
+}
+
 async function loadResourceReport() {
   if (!currentSummary) {
     return;
@@ -227,22 +269,20 @@ async function loadResourceReport() {
     resourceCache.set(reportPath, await fetchJson(reportPath));
   }
   resourceReport = resourceCache.get(reportPath);
-  renderResources();
+  resourcePage = 0;
+  await loadResourceChunk();
 }
 
-function flattenFileTree(tree) {
-  const rows = [];
-  for (const entry of tree.entries || []) {
-    for (const file of entry.files || []) {
-      rows.push({
-        root: entry.root,
-        path: file.path,
-        size: file.size,
-        sha256: file.sha256,
-      });
-    }
+function decodeFileRow(row) {
+  if (!Array.isArray(row)) {
+    return row;
   }
-  return rows;
+  return {
+    root: row[0],
+    path: row[1],
+    size: row[2],
+    sha256: row[3],
+  };
 }
 
 function fileText(row) {
@@ -268,18 +308,23 @@ function renderFiles() {
   if (!fileTree) {
     tbody.replaceChildren(emptyRow(4, "Select a validator with a cache tree."));
     document.querySelector("#file-count").textContent = "";
+    document.querySelector("#file-page").textContent = "";
     return;
   }
   const query = document.querySelector("#file-search").value.trim().toLowerCase();
   const sort = document.querySelector("#file-sort").value;
-  let rows = fileTree.rows;
+  let rows = fileRows;
   if (query) {
     rows = rows.filter((row) => fileText(row).includes(query));
   }
   rows = sortFiles(rows, sort);
   const shown = rows.slice(0, MAX_ROWS);
+  const pages = fileTree.chunks?.length || 0;
   document.querySelector("#file-count").textContent =
-    `${formatter.format(rows.length)} matching from ${formatter.format(fileTree.files)} files`;
+    `${formatter.format(rows.length)} matching in this page from ${formatter.format(fileTree.files)} files`;
+  document.querySelector("#file-page").textContent = pages ? `${filePage + 1} / ${pages}` : "";
+  document.querySelector("#file-prev").disabled = filePage <= 0;
+  document.querySelector("#file-next").disabled = !pages || filePage >= pages - 1;
   const fragment = document.createDocumentFragment();
   for (const file of shown) {
     const row = document.createElement("tr");
@@ -297,6 +342,22 @@ function renderFiles() {
   tbody.replaceChildren(fragment);
 }
 
+async function loadFileChunk() {
+  if (!fileTree?.chunks?.length) {
+    fileRows = [];
+    renderFiles();
+    return;
+  }
+  const chunk = fileTree.chunks[filePage];
+  if (!fileChunkCache.has(chunk.path)) {
+    document.querySelector("#files").replaceChildren(emptyRow(4, `Loading page ${filePage + 1}...`));
+    const data = await fetchJson(chunk.path);
+    fileChunkCache.set(chunk.path, (data.rows || []).map(decodeFileRow));
+  }
+  fileRows = fileChunkCache.get(chunk.path);
+  renderFiles();
+}
+
 async function loadFileTree() {
   if (!currentSummary || !fileValidator) {
     renderFiles();
@@ -312,10 +373,11 @@ async function loadFileTree() {
   if (!fileCache.has(path)) {
     document.querySelector("#files").replaceChildren(emptyRow(4, `Loading ${entry.label} file tree...`));
     const tree = await fetchJson(path);
-    fileCache.set(path, { ...tree, rows: flattenFileTree(tree) });
+    fileCache.set(path, tree);
   }
   fileTree = fileCache.get(path);
-  renderFiles();
+  filePage = 0;
+  await loadFileChunk();
 }
 
 function emptyRow(colspan, text) {
@@ -358,7 +420,11 @@ function render(summary) {
 async function loadRun(runId) {
   const summary = await fetchJson(`data/runs/${runId}/summary.json`);
   resourceReport = null;
+  resourceRows = [];
+  resourcePage = 0;
   fileTree = null;
+  fileRows = [];
+  filePage = 0;
   render(summary);
   if (currentView === "resources") {
     await loadResourceReport();
@@ -375,17 +441,37 @@ function setupControls() {
   document.querySelector("#resource-payload").addEventListener("change", (event) => {
     resourcePayload = event.target.value;
     resourceReport = null;
+    resourceRows = [];
+    resourcePage = 0;
     loadResourceReport().catch(showError);
   });
   document.querySelector("#resource-search").addEventListener("input", renderResources);
   document.querySelector("#resource-sort").addEventListener("change", renderResources);
+  document.querySelector("#resource-prev").addEventListener("click", () => {
+    resourcePage = Math.max(0, resourcePage - 1);
+    loadResourceChunk().catch(showError);
+  });
+  document.querySelector("#resource-next").addEventListener("click", () => {
+    resourcePage = Math.min((resourceReport?.chunks?.length || 1) - 1, resourcePage + 1);
+    loadResourceChunk().catch(showError);
+  });
   document.querySelector("#file-validator").addEventListener("change", (event) => {
     fileValidator = event.target.value;
     fileTree = null;
+    fileRows = [];
+    filePage = 0;
     loadFileTree().catch(showError);
   });
   document.querySelector("#file-search").addEventListener("input", renderFiles);
   document.querySelector("#file-sort").addEventListener("change", renderFiles);
+  document.querySelector("#file-prev").addEventListener("click", () => {
+    filePage = Math.max(0, filePage - 1);
+    loadFileChunk().catch(showError);
+  });
+  document.querySelector("#file-next").addEventListener("click", () => {
+    filePage = Math.min((fileTree?.chunks?.length || 1) - 1, filePage + 1);
+    loadFileChunk().catch(showError);
+  });
 }
 
 function setupRuns() {

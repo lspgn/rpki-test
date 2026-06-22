@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import shutil
 import tarfile
 from collections import Counter, defaultdict
@@ -24,6 +25,36 @@ from rpki_project import (
     utc_now,
     write_json,
 )
+
+CHUNK_ROWS = 10000
+
+
+def write_compact_json(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, separators=(",", ":"), sort_keys=True)
+        handle.write("\n")
+
+
+def chunk_records(
+    base_dir: Path,
+    public_base: str,
+    records: list[Any],
+    chunk_rows: int = CHUNK_ROWS,
+) -> list[dict[str, Any]]:
+    chunks = []
+    for index, start in enumerate(range(0, len(records), chunk_rows)):
+        items = records[start : start + chunk_rows]
+        path = base_dir / f"{index:04d}.json"
+        write_compact_json(path, {"rows": items})
+        chunks.append(
+            {
+                "path": f"{public_base}/{index:04d}.json",
+                "rows": len(items),
+                "start": start,
+            }
+        )
+    return chunks
 
 
 def find_result_dirs(results_dir: Path) -> list[Path]:
@@ -115,6 +146,39 @@ def cache_tree_from_archive(archive_path: Path, target_path: Path) -> dict[str, 
     }
     write_json(target_path, tree)
     return {"path": "cache-tree.json", "roots": list(roots), "files": total_files, "size": total_size}
+
+
+def chunk_cache_tree(tree_path: Path, public_base: str) -> dict[str, Any]:
+    tree = read_json(tree_path)
+    rows = []
+    root_summaries = []
+    for entry in tree.get("entries", []):
+        root = entry.get("root")
+        root_summaries.append(
+            {
+                "root": root,
+                "files": len(entry.get("files", [])),
+                "size": entry.get("size", 0),
+            }
+        )
+        for item in entry.get("files", []):
+            rows.append([root, item.get("path"), item.get("size"), item.get("sha256")])
+
+    chunk_dir = tree_path.parent / "cache-tree"
+    if chunk_dir.exists():
+        shutil.rmtree(chunk_dir)
+    chunks = chunk_records(chunk_dir, f"{public_base}/cache-tree", rows)
+    index = {
+        "roots": tree.get("roots", []),
+        "files": tree.get("files", len(rows)),
+        "size": tree.get("size", sum((row[2] or 0) for row in rows)),
+        "rootSummaries": root_summaries,
+        "source": tree.get("source"),
+        "chunkRows": CHUNK_ROWS,
+        "chunks": chunks,
+    }
+    write_compact_json(tree_path, index)
+    return {"path": "cache-tree.json", "roots": index["roots"], "files": index["files"], "size": index["size"]}
 
 
 def copy_result(result_dir: Path, target_dir: Path) -> dict[str, Any]:
@@ -302,13 +366,36 @@ def build_object_report(payload: str, entries: list[dict[str, Any]]) -> dict[str
     }
 
 
+def encode_resource_row(row: dict[str, Any]) -> list[Any]:
+    return [
+        row["key"],
+        row["label"],
+        row["seenBy"],
+        row["missingFrom"],
+        row["divergent"],
+        row["sourceFiles"],
+        row["object"],
+    ]
+
+
 def write_object_reports(run_dir: Path, run_id: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
     report_dir = run_dir / "reports"
     reports = {}
     for payload in PAYLOADS:
         report = build_object_report(payload, entries)
         path = report_dir / f"{payload}.json"
-        write_json(path, report)
+        chunk_dir = report_dir / payload
+        if chunk_dir.exists():
+            shutil.rmtree(chunk_dir)
+        chunks = chunk_records(
+            chunk_dir,
+            f"data/runs/{run_id}/reports/{payload}",
+            [encode_resource_row(row) for row in report["rows"]],
+        )
+        report_index = {key: value for key, value in report.items() if key != "rows"}
+        report_index["chunkRows"] = CHUNK_ROWS
+        report_index["chunks"] = chunks
+        write_compact_json(path, report_index)
         reports[payload] = {
             "path": f"data/runs/{run_id}/reports/{payload}.json",
             "eligibleValidators": report["eligibleValidators"],
@@ -316,6 +403,7 @@ def write_object_reports(run_dir: Path, run_id: str, entries: list[dict[str, Any
             "totalObjects": report["totalObjects"],
             "differingObjects": report["differingObjects"],
             "includedRows": report["includedRows"],
+            "chunks": len(chunks),
         }
     return reports
 
@@ -402,6 +490,12 @@ def main() -> None:
         cache_tree_metadata = copied_status.get("cacheTree") or None
         cache_tree_file = entry_dir / "cache-tree.json"
         if cache_tree_file.exists():
+            existing_tree = read_json(cache_tree_file)
+            if "chunks" not in existing_tree:
+                cache_tree_metadata = chunk_cache_tree(
+                    cache_tree_file,
+                    f"data/runs/{run_id}/{copied_status['id']}",
+                )
             cache_tree_path = f"data/runs/{run_id}/{copied_status['id']}/cache-tree.json"
             if cache_tree_metadata is None:
                 tree = read_json(cache_tree_file)

@@ -131,16 +131,19 @@ class AggregateTests(unittest.TestCase):
             manifest = read_json(public / "data/manifest.json")
             latest = read_json(public / "data/latest.json")
             report = read_json(public / "data/runs/fixture-run/reports/routeOrigins.json")
+            report_rows = read_json(public / "data/runs/fixture-run/reports/routeOrigins/0000.json")["rows"]
             self.assertEqual(manifest["latestRun"], "fixture-run")
             self.assertEqual(len(manifest["runs"]), 1)
             self.assertEqual(len(latest["entries"]), 2)
             self.assertEqual(latest["reports"]["routeOrigins"]["totalObjects"], 2)
             self.assertEqual(latest["reports"]["routeOrigins"]["differingObjects"], 1)
             self.assertEqual(latest["reports"]["routeOrigins"]["includedRows"], 2)
+            self.assertEqual(latest["reports"]["routeOrigins"]["chunks"], 1)
             self.assertEqual(latest["reports"]["aspas"]["excludedValidators"][0]["reason"], "unsupported")
-            extra = [row for row in report["rows"] if row["object"]["prefix"] == "198.51.100.0/24"][0]
-            self.assertEqual(extra["seenBy"], ["routinator-test"])
-            self.assertEqual(extra["missingFrom"], ["fort-test"])
+            self.assertEqual(report["chunks"][0]["path"], "data/runs/fixture-run/reports/routeOrigins/0000.json")
+            extra = [row for row in report_rows if row[6]["prefix"] == "198.51.100.0/24"][0]
+            self.assertEqual(extra[2], ["routinator-test"])
+            self.assertEqual(extra[3], ["fort-test"])
             self.assertTrue((public / "data/runs/fixture-run/routinator-test/raw/raw.json.gz").exists())
             self.assertFalse((public / "data/runs/fixture-run/routinator-test/raw/raw.json").exists())
             self.assertTrue((public / "index.html").exists())
