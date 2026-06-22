@@ -4,11 +4,9 @@
 from __future__ import annotations
 
 import argparse
-import json
 import shlex
 import subprocess
 import sys
-import tarfile
 import tempfile
 import threading
 import time
@@ -17,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from rpki_project import (
+    directory_size,
+    file_inventory,
     find_validator,
     gzip_file,
     load_config,
@@ -136,22 +136,46 @@ def prepare_output_dir(output_dir: Path) -> None:
             path.chmod(0o777)
 
 
-def archive_work_dir(work_dir: Path, output_dir: Path) -> list[dict[str, Any]]:
-    archive_dir = output_dir / "archives"
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    archive_path = archive_dir / "work-cache.tar.gz"
-    with tarfile.open(archive_path, "w:gz") as tar:
-        for name in ("cache", "tals"):
-            source = work_dir / name
-            if source.exists():
-                tar.add(source, arcname=name)
-    return [
-        {
-            "path": "archives/work-cache.tar.gz",
-            "size": archive_path.stat().st_size,
-            "sha256": sha256_file(archive_path),
-        }
-    ]
+def write_cache_tree(work_dir: Path, output_dir: Path) -> dict[str, Any]:
+    roots = ("cache", "tals")
+    root_entries = []
+    total_files = 0
+    total_size = 0
+    for name in roots:
+        source = work_dir / name
+        files = file_inventory(source)
+        size = directory_size(source)
+        total_files += len(files)
+        total_size += size
+        root_entries.append({"root": name, "files": files, "size": size})
+
+    tree = {
+        "roots": list(roots),
+        "files": total_files,
+        "size": total_size,
+        "entries": root_entries,
+    }
+    write_json(output_dir / "cache-tree.json", tree)
+    return {"path": "cache-tree.json", "roots": list(roots), "files": total_files, "size": total_size}
+
+
+def compress_raw_files(raw_dir: Path) -> list[dict[str, Any]]:
+    raw_files = []
+    for path in sorted(raw_dir.glob("*.json")):
+        content_size = path.stat().st_size
+        content_sha256 = sha256_file(path)
+        gz_path = gzip_file(path)
+        path.unlink()
+        raw_files.append(
+            {
+                "path": f"raw/{gz_path.name}",
+                "size": gz_path.stat().st_size,
+                "sha256": sha256_file(gz_path),
+                "contentSize": content_size,
+                "contentSha256": content_sha256,
+            }
+        )
+    return raw_files
 
 
 def main() -> None:
@@ -169,7 +193,7 @@ def main() -> None:
     prepare_output_dir(output_dir)
 
     work_dir = Path(tempfile.mkdtemp(prefix=f"rpki-{entry['id']}-"))
-    archives: list[dict[str, Any]] = []
+    cache_tree: dict[str, Any] | None = None
     try:
         prepare_output_dir(work_dir)
         command = docker_command(entry, output_dir, work_dir)
@@ -181,16 +205,16 @@ def main() -> None:
             stderr += "\n::permission-normalization::\n" + permission_output
         if permission_returncode != 0 and returncode == 0:
             returncode = permission_returncode
-            stderr += "\nPermission normalization failed before cache archiving.\n"
+            stderr += "\nPermission normalization failed before cache tree inventory.\n"
         if permission_returncode == 0:
             try:
-                archives = archive_work_dir(work_dir, output_dir)
-            except Exception as exc:  # noqa: BLE001 - keep validator status artifacts on archive failures.
-                stderr += f"\nCache archive failed: {exc}\n"
+                cache_tree = write_cache_tree(work_dir, output_dir)
+            except Exception as exc:  # noqa: BLE001 - keep validator status artifacts on inventory failures.
+                stderr += f"\nCache tree inventory failed: {exc}\n"
                 if returncode == 0:
                     returncode = 66
         else:
-            stderr += "\nCache archive skipped because permission normalization failed.\n"
+            stderr += "\nCache tree inventory skipped because permission normalization failed.\n"
     finally:
         normalize_permissions(entry, output_dir, work_dir)
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -200,7 +224,6 @@ def main() -> None:
     (output_dir / "stdout.log").write_text(stdout, encoding="utf-8")
     (output_dir / "stderr.log").write_text(stderr, encoding="utf-8")
 
-    raw_files = []
     raw_values = []
     normalization_error = None
     if returncode == 0:
@@ -214,17 +237,7 @@ def main() -> None:
         normalized = normalize_payloads(raw_values, entry)
         write_json(output_dir / "normalized.json", normalized)
 
-    for path in sorted(raw_dir.glob("*.json")):
-        gz_path = gzip_file(path)
-        raw_files.append(
-            {
-                "path": f"raw/{path.name}",
-                "compressedPath": f"raw/{gz_path.name}",
-                "size": path.stat().st_size,
-                "compressedSize": gz_path.stat().st_size,
-                "sha256": sha256_file(path),
-            }
-        )
+    raw_files = compress_raw_files(raw_dir)
 
     status = {
         "id": entry["id"],
@@ -242,7 +255,8 @@ def main() -> None:
         "success": returncode == 0,
         "command": entry.get("script"),
         "rawFiles": raw_files,
-        "archives": archives,
+        "archives": [],
+        "cacheTree": cache_tree,
         "normalizationError": normalization_error,
     }
     write_json(output_dir / "status.json", status)

@@ -6,6 +6,7 @@ const payloadLabels = {
 
 let manifest = null;
 let currentSummary = null;
+let currentReport = null;
 let currentPayload = "routeOrigins";
 
 const formatter = new Intl.NumberFormat();
@@ -58,8 +59,14 @@ function renderEntries(summary) {
     const downloads = document.createElement("div");
     downloads.className = "downloads";
     for (const [label, path] of Object.entries(entry.paths || {})) {
+      if (!path) {
+        continue;
+      }
       const paths = Array.isArray(path) ? path : [path];
       paths.forEach((item, index) => {
+        if (!item) {
+          return;
+        }
         const link = document.createElement("a");
         link.href = item;
         link.textContent = paths.length > 1 ? `${label} ${index + 1}` : label;
@@ -104,17 +111,63 @@ function renderDiffs(summary) {
   }
 }
 
+function renderPresence(report) {
+  const tbody = document.querySelector("#presence");
+  tbody.replaceChildren();
+  if (!report || !report.rows.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 3;
+    cell.className = "muted";
+    cell.textContent = "No objects are available for this payload.";
+    row.append(cell);
+    tbody.append(row);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  for (const item of report.rows) {
+    const row = document.createElement("tr");
+    if (item.divergent) {
+      row.className = "is-divergent";
+    }
+    const object = document.createElement("td");
+    object.textContent = item.label || item.key;
+    const seen = document.createElement("td");
+    seen.textContent = item.seenBy.length ? item.seenBy.join(", ") : "none";
+    const missing = document.createElement("td");
+    missing.className = item.missingFrom.length ? "" : "muted";
+    missing.textContent = item.missingFrom.length ? item.missingFrom.join(", ") : "none";
+    row.append(object, seen, missing);
+    fragment.append(row);
+  }
+  tbody.append(fragment);
+}
+
 function render(summary) {
   currentSummary = summary;
   setSubtitle(summary);
   renderMetrics(summary);
   renderEntries(summary);
   renderDiffs(summary);
+  renderPresence(currentReport);
 }
 
 async function loadRun(runId) {
   const summary = await fetchJson(`data/runs/${runId}/summary.json`);
+  currentSummary = summary;
+  currentReport = null;
   render(summary);
+  await loadReport();
+}
+
+async function loadReport() {
+  if (!currentSummary) {
+    return;
+  }
+  const reportPath = currentSummary.reports?.[currentPayload]?.path;
+  currentReport = reportPath ? await fetchJson(reportPath) : null;
+  render(currentSummary);
 }
 
 function setupTabs() {
@@ -123,7 +176,9 @@ function setupTabs() {
       currentPayload = button.dataset.payload;
       document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("is-active", tab === button));
       if (currentSummary) {
-        render(currentSummary);
+        loadReport().catch((error) => {
+          document.querySelector("#subtitle").textContent = `Unable to load object report: ${error.message}`;
+        });
       }
     });
   }

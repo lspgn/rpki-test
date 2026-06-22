@@ -162,6 +162,14 @@ tr:last-child td {
   border-bottom: 0;
 }
 
+.presence-table {
+  min-width: 900px;
+}
+
+.presence-table .is-divergent td {
+  background: #fff7df;
+}
+
 a {
   color: var(--accent);
   text-decoration: none;

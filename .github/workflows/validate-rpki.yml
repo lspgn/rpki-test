@@ -75,6 +75,7 @@ jobs:
                   "success": False,
                   "rawFiles": [],
                   "archives": [],
+                  "cacheTree": None,
                   "normalizationError": "validator runner exited before writing status.json"
               }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           PY
@@ -90,9 +91,8 @@ jobs:
             out/${{ matrix.id }}/stderr.log
             out/${{ matrix.id }}/*.log
             out/${{ matrix.id }}/normalized.json
-            out/${{ matrix.id }}/raw/*.json
+            out/${{ matrix.id }}/cache-tree.json
             out/${{ matrix.id }}/raw/*.json.gz
-            out/${{ matrix.id }}/archives/*.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -115,20 +115,12 @@ jobs:
         id: pages
         uses: actions/configure-pages@v6
 
-      - name: Fetch previous Pages history
-        env:
-          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
-          FALLBACK_BASE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
-        run: |
-          BASE_URL="${PAGES_BASE_URL:-$FALLBACK_BASE_URL}"
-          python3 scripts/fetch_history.py --base-url "$BASE_URL" --output previous-site
-
       - name: Build Pages site
         env:
           MAX_PAGES_BYTES: "996147200"
         run: |
           RUN_ID="$(date -u +'%Y%m%dT%H%M%SZ')-${{ github.run_number }}-${{ github.run_attempt }}"
-          python3 scripts/aggregate_results.py --results results --site site --previous previous-site --output public --run-id "$RUN_ID"
+          python3 scripts/aggregate_results.py --results results --site site --output public --run-id "$RUN_ID"
 
       - name: Upload generated file tree artifact
         uses: actions/upload-artifact@v7

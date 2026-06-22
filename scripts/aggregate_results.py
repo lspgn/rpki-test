@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import shutil
 from itertools import combinations
 from pathlib import Path
@@ -30,7 +29,7 @@ def find_result_dirs(results_dir: Path) -> list[Path]:
 
 def copy_result(result_dir: Path, target_dir: Path) -> dict[str, Any]:
     target_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("status.json", "normalized.json", "stdout.log", "stderr.log"):
+    for name in ("status.json", "normalized.json", "stdout.log", "stderr.log", "cache-tree.json"):
         source = result_dir / name
         if source.exists():
             shutil.copy2(source, target_dir / name)
@@ -101,31 +100,78 @@ def build_comparisons(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return comparisons
 
 
-def previous_runs(manifest_path: Path, current_id: str) -> list[dict[str, Any]]:
-    if not manifest_path.exists():
-        return []
-    manifest = read_json(manifest_path)
-    return [run for run in manifest.get("runs", []) if run.get("id") != current_id]
+def object_label(payload: str, item: dict[str, Any]) -> str:
+    if payload == "routeOrigins":
+        return f"{item.get('prefix')} AS{item.get('asn')} maxLength {item.get('maxLength')}"
+    if payload == "routerKeys":
+        return f"AS{item.get('asn')} {item.get('ski')}"
+    if payload == "aspas":
+        providers = ", ".join(f"AS{provider}" for provider in item.get("providers", []))
+        return f"AS{item.get('customer')} providers {providers}"
+    raise ValueError(f"unknown payload: {payload}")
 
 
-def prune_runs(public_dir: Path, runs: list[dict[str, Any]], max_bytes: int) -> list[dict[str, Any]]:
-    if max_bytes <= 0:
-        return runs
-    kept = list(runs)
-    runs_dir = public_dir / "data" / "runs"
-    while len(kept) > 1 and directory_size(public_dir) > max_bytes:
-        victim = kept.pop()
-        victim_dir = runs_dir / victim["id"]
-        if victim_dir.exists():
-            shutil.rmtree(victim_dir)
-    return kept
+def build_object_report(payload: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
+    eligible = [
+        entry
+        for entry in entries
+        if entry["success"] and payload not in (entry.get("unsupported") or [])
+    ]
+    eligible_ids = [entry["id"] for entry in eligible]
+    objects: dict[str, dict[str, Any]] = {}
+    seen_by: dict[str, set[str]] = {}
+
+    for entry in eligible:
+        for item in entry["normalized"].get(payload, []):
+            key = payload_key(payload, item)
+            objects.setdefault(key, item)
+            seen_by.setdefault(key, set()).add(entry["id"])
+
+    rows = []
+    for key, item in objects.items():
+        seen = sorted(seen_by.get(key, set()))
+        missing = [entry_id for entry_id in eligible_ids if entry_id not in seen]
+        rows.append(
+            {
+                "key": key,
+                "label": object_label(payload, item),
+                "object": item,
+                "seenBy": seen,
+                "missingFrom": missing,
+                "divergent": bool(missing),
+            }
+        )
+    rows.sort(key=lambda row: (not row["divergent"], row["label"], row["key"]))
+    differing = sum(1 for row in rows if row["divergent"])
+    return {
+        "payload": payload,
+        "eligibleValidators": eligible_ids,
+        "totalObjects": len(rows),
+        "differingObjects": differing,
+        "rows": rows,
+    }
+
+
+def write_object_reports(run_dir: Path, run_id: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
+    report_dir = run_dir / "reports"
+    reports = {}
+    for payload in PAYLOADS:
+        report = build_object_report(payload, entries)
+        path = report_dir / f"{payload}.json"
+        write_json(path, report)
+        reports[payload] = {
+            "path": f"data/runs/{run_id}/reports/{payload}.json",
+            "eligibleValidators": report["eligibleValidators"],
+            "totalObjects": report["totalObjects"],
+            "differingObjects": report["differingObjects"],
+        }
+    return reports
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--results", required=True)
     parser.add_argument("--site", default="site")
-    parser.add_argument("--previous", default="")
     parser.add_argument("--output", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--max-site-bytes", type=int, default=env_int("MAX_PAGES_BYTES", 950 * 1024 * 1024))
@@ -138,8 +184,6 @@ def main() -> None:
     public_dir.mkdir(parents=True)
 
     copytree_contents(args.site, public_dir)
-    if args.previous:
-        copytree_contents(args.previous, public_dir)
 
     run_id = args.run_id
     run_dir = public_dir / "data" / "runs" / run_id
@@ -160,6 +204,9 @@ def main() -> None:
             for path in sorted(entry_dir.glob("*.log"))
             if path.name not in {"stdout.log", "stderr.log"}
         ]
+        cache_tree_path = None
+        if (entry_dir / "cache-tree.json").exists():
+            cache_tree_path = f"data/runs/{run_id}/{copied_status['id']}/cache-tree.json"
         entries.append(
             {
                 "id": copied_status["id"],
@@ -179,6 +226,7 @@ def main() -> None:
                     "stderr": f"data/runs/{run_id}/{copied_status['id']}/stderr.log",
                     "raw": raw_paths,
                     "logs": extra_logs,
+                    "cacheTree": cache_tree_path,
                 },
                 "normalized": normalized,
             }
@@ -187,12 +235,14 @@ def main() -> None:
     entries.sort(key=lambda item: item["id"])
     generated_at = utc_now()
     summary_entries = [{key: value for key, value in entry.items() if key != "normalized"} for entry in entries]
+    reports = write_object_reports(run_dir, run_id, entries)
     summary = {
         "id": run_id,
         "generatedAt": generated_at,
         "success": all(entry["success"] for entry in entries) and bool(entries),
         "entries": summary_entries,
         "comparisons": build_comparisons(entries),
+        "reports": reports,
     }
     write_json(run_dir / "summary.json", summary)
     write_json(public_dir / "data" / "latest.json", summary)
@@ -206,8 +256,7 @@ def main() -> None:
         "size": directory_size(run_dir),
     }
     manifest_path = public_dir / "data" / "manifest.json"
-    runs = [current_run] + previous_runs(manifest_path, run_id)
-    runs = prune_runs(public_dir, runs, args.max_site_bytes)
+    runs = [current_run]
     for run in runs:
         run_dir_for_manifest = public_dir / "data" / "runs" / run["id"]
         run["files"] = file_inventory(run_dir_for_manifest)

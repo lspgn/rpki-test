@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from aggregate_results import main as aggregate_main  # noqa: E402
 from rpki_project import load_config, normalize_payloads, payload_counts, read_json, validators, write_json  # noqa: E402
-from run_validator import archive_work_dir  # noqa: E402
+from run_validator import compress_raw_files, write_cache_tree  # noqa: E402
 
 
 class NormalizationTests(unittest.TestCase):
@@ -97,9 +97,16 @@ class AggregateTests(unittest.TestCase):
                     "unsupported": [name for name, supported in payloads.items() if supported is False],
                 }
                 write_json(out / "status.json", status)
-                write_json(out / "normalized.json", normalize_payloads([raw], {**status, "image": "fixture"}))
+                normalized = normalize_payloads([raw], {**status, "image": "fixture"})
+                if entry_id == "routinator-test":
+                    normalized["routeOrigins"].append(
+                        {"asn": 64500, "prefix": "198.51.100.0/24", "maxLength": 24, "ta": "arin"}
+                    )
+                write_json(out / "normalized.json", normalized)
+                compress_raw_files(raw_dir)
                 (out / "stdout.log").write_text("", encoding="utf-8")
                 (out / "stderr.log").write_text("", encoding="utf-8")
+                write_json(out / "cache-tree.json", {"roots": ["cache", "tals"], "files": 0, "size": 0, "entries": []})
 
             old_argv = sys.argv
             try:
@@ -122,13 +129,22 @@ class AggregateTests(unittest.TestCase):
 
             manifest = read_json(public / "data/manifest.json")
             latest = read_json(public / "data/latest.json")
+            report = read_json(public / "data/runs/fixture-run/reports/routeOrigins.json")
             self.assertEqual(manifest["latestRun"], "fixture-run")
+            self.assertEqual(len(manifest["runs"]), 1)
             self.assertEqual(len(latest["entries"]), 2)
+            self.assertEqual(latest["reports"]["routeOrigins"]["totalObjects"], 2)
+            self.assertEqual(latest["reports"]["routeOrigins"]["differingObjects"], 1)
+            extra = [row for row in report["rows"] if row["object"]["prefix"] == "198.51.100.0/24"][0]
+            self.assertEqual(extra["seenBy"], ["routinator-test"])
+            self.assertEqual(extra["missingFrom"], ["fort-test"])
+            self.assertTrue((public / "data/runs/fixture-run/routinator-test/raw/raw.json.gz").exists())
+            self.assertFalse((public / "data/runs/fixture-run/routinator-test/raw/raw.json").exists())
             self.assertTrue((public / "index.html").exists())
 
 
-class ArchiveTests(unittest.TestCase):
-    def test_work_cache_archive_uses_safe_artifact_path(self) -> None:
+class ArtifactTests(unittest.TestCase):
+    def test_cache_tree_includes_cache_and_tal_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             work = root / "work"
@@ -136,12 +152,39 @@ class ArchiveTests(unittest.TestCase):
             colon_path = work / "cache/repository/ripe-ncc.tal/https/krill.ipgua.com:3030/rrdp"
             colon_path.mkdir(parents=True)
             (colon_path / "notification.xml").write_text("<notification />", encoding="utf-8")
+            tal_path = work / "tals/arin.tal"
+            tal_path.parent.mkdir(parents=True)
+            tal_path.write_text("rsync://example.invalid/arin.cer\n", encoding="utf-8")
 
-            archives = archive_work_dir(work, output)
+            summary = write_cache_tree(work, output)
+            tree = read_json(output / "cache-tree.json")
 
-            self.assertEqual(archives[0]["path"], "archives/work-cache.tar.gz")
-            self.assertTrue((output / "archives/work-cache.tar.gz").exists())
-            self.assertNotIn(":", archives[0]["path"])
+            self.assertEqual(summary["path"], "cache-tree.json")
+            self.assertEqual(summary["roots"], ["cache", "tals"])
+            self.assertEqual(summary["files"], 2)
+            paths = {
+                f"{entry['root']}/{item['path']}": item
+                for entry in tree["entries"]
+                for item in entry["files"]
+            }
+            self.assertIn("cache/repository/ripe-ncc.tal/https/krill.ipgua.com:3030/rrdp/notification.xml", paths)
+            self.assertIn("tals/arin.tal", paths)
+            self.assertIn("sha256", paths["tals/arin.tal"])
+            self.assertFalse((output / "archives/work-cache.tar.gz").exists())
+
+    def test_raw_json_is_compressed_and_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            raw_dir = Path(tmp) / "raw"
+            raw_dir.mkdir()
+            raw = raw_dir / "validator.json"
+            raw.write_text(json.dumps({"ok": True}), encoding="utf-8")
+
+            raw_files = compress_raw_files(raw_dir)
+
+            self.assertEqual(raw_files[0]["path"], "raw/validator.json.gz")
+            self.assertIn("contentSha256", raw_files[0])
+            self.assertTrue((raw_dir / "validator.json.gz").exists())
+            self.assertFalse(raw.exists())
 
 
 if __name__ == "__main__":
