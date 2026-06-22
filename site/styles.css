@@ -444,6 +444,30 @@ a:hover {
   font-size: 10px;
 }
 
+.log-lane {
+  fill: #f8f1ea;
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.log-bar {
+  cursor: help;
+}
+
+.log-bar.stdout {
+  fill: var(--accent);
+  opacity: 0.72;
+}
+
+.log-bar.stderr {
+  fill: #b84c3d;
+  opacity: 0.82;
+}
+
+.log-bar:hover {
+  opacity: 1;
+}
+
 .timeline-area {
   opacity: 0.16;
   pointer-events: none;

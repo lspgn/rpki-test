@@ -371,6 +371,16 @@ function eventLines(group) {
   ];
 }
 
+function logBucketLines(bucket, group) {
+  if (group?.values?.length) {
+    return eventLines(group);
+  }
+  return [
+    `${formatOffset(bucket.startOffsetSeconds)}-${formatOffset(bucket.endOffsetSeconds)} logs`,
+    `${formatCount(bucket.stdoutCount || 0)} stdout / ${formatCount(bucket.stderrCount || 0)} stderr`,
+  ];
+}
+
 function dnsLines(group) {
   const byQuery = groupedCounts(
     group.values,
@@ -477,6 +487,8 @@ function renderTimelineChart(svg, timeline, entry) {
   const flows = sortedFlows(timeline);
   const events = timeline?.events || [];
   const dnsQueries = timeline?.network?.dnsQueries || [];
+  const logGroups = groupedByBucket(events, timeline?.bucketSeconds || 10, (event) => event.offsetSeconds);
+  const logGroupByIndex = new Map(logGroups.map((group) => [group.index, group]));
   if (!buckets.length && !flows.length && !events.length) {
     svg.setAttribute("viewBox", "0 0 980 120");
     svg.append(svgElement("text", { x: 24, y: 64, class: "timeline-empty" }));
@@ -500,7 +512,9 @@ function renderTimelineChart(svg, timeline, entry) {
   const flowHeight = flows.length
     ? (expanded ? Math.max(54, visibleFlows.length * flowRowHeight + 24) : 78)
     : 28;
-  const laneTop = flowTop + flowHeight + 22;
+  const logTop = flowTop + flowHeight + 22;
+  const logHeight = 58;
+  const laneTop = logTop + logHeight + 22;
   const laneHeight = 66;
   const height = laneTop + laneHeight * lanes.length + 34;
   const plotWidth = width - left - right;
@@ -587,6 +601,61 @@ function renderTimelineChart(svg, timeline, entry) {
     }
   }
 
+  const logLabel = svgElement("text", { x: 18, y: logTop + 17, class: "lane-label" });
+  logLabel.textContent = "Logs";
+  svg.append(logLabel);
+  svg.append(svgElement("rect", { x: left, y: logTop, width: plotWidth, height: logHeight, class: "log-lane" }));
+  const logBottom = logTop + logHeight - 12;
+  const logPlotHeight = logHeight - 24;
+  const maxLogCount = Math.max(...buckets.map((bucket) => (bucket.stdoutCount || 0) + (bucket.stderrCount || 0)), 1);
+  const logMax = svgElement("text", { x: 18, y: logTop + 37, class: "lane-max" });
+  logMax.textContent = `max ${formatCount(maxLogCount)} per bucket`;
+  svg.append(logMax);
+  const logZero = svgElement("text", { x: left - 18, y: logBottom + 4, class: "axis-label" });
+  logZero.textContent = "0";
+  svg.append(logZero);
+  buckets.forEach((bucket) => {
+    const stdout = bucket.stdoutCount || 0;
+    const stderr = bucket.stderrCount || 0;
+    const total = stdout + stderr;
+    if (!total) {
+      return;
+    }
+    const x = xForOffset(bucket.startOffsetSeconds || 0);
+    const groupIndex = Math.floor((bucket.startOffsetSeconds || 0) / (bucketSeconds || 10));
+    const group = logGroupByIndex.get(groupIndex);
+    const bucketWidth = Math.max(2, xForOffset(bucket.endOffsetSeconds || ((bucket.startOffsetSeconds || 0) + bucketSeconds)) - x);
+    const barWidth = Math.max(2, bucketWidth - 1);
+    const stderrHeight = (stderr / maxLogCount) * logPlotHeight;
+    const stdoutHeight = (stdout / maxLogCount) * logPlotHeight;
+    let y = logBottom;
+    if (stdoutHeight > 0) {
+      y -= Math.max(1, stdoutHeight);
+      const stdoutBar = svgElement("rect", {
+        x,
+        y,
+        width: barWidth,
+        height: Math.max(1, stdoutHeight),
+        class: "log-bar stdout",
+      });
+      addTooltipHandlers(stdoutBar, logBucketLines(bucket, group));
+      svg.append(stdoutBar);
+    }
+    if (stderrHeight > 0) {
+      y -= Math.max(1, stderrHeight);
+      const stderrBar = svgElement("rect", {
+        x,
+        y,
+        width: barWidth,
+        height: Math.max(1, stderrHeight),
+        class: "log-bar stderr",
+      });
+      addTooltipHandlers(stderrBar, logBucketLines(bucket, group));
+      svg.append(stderrBar);
+    }
+  });
+  svg.append(svgElement("line", { x1: left, x2: width - right, y1: logBottom, y2: logBottom, class: "axis" }));
+
   lanes.forEach((key, laneIndex) => {
     const config = configs[key];
     const yTop = laneTop + laneIndex * laneHeight;
@@ -650,7 +719,7 @@ function renderTimelineChart(svg, timeline, entry) {
   const markerGroup = svgElement("g", { class: "timeline-markers" });
   for (const group of groupedByBucket(events, bucketSeconds, (event) => event.offsetSeconds).slice(0, 160)) {
     const x = xForOffset(group.offsetSeconds + bucketSeconds / 2);
-    const dot = svgElement("circle", { cx: x, cy: flowTop - 5, r: Math.min(8, 3 + Math.sqrt(group.values.length)), class: "event-dot logs" });
+    const dot = svgElement("circle", { cx: x, cy: logTop - 5, r: Math.min(8, 3 + Math.sqrt(group.values.length)), class: "event-dot logs" });
     addTooltipHandlers(dot, eventLines(group));
     markerGroup.append(dot);
   }
