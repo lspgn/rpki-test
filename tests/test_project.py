@@ -69,6 +69,11 @@ class ConfigTests(unittest.TestCase):
         for entry in entries:
             self.assertIn("@sha256:", entry["image"])
             self.assertIn("payloads", entry)
+        rpki_client = next(entry for entry in entries if entry["validator"] == "rpki-client")
+        self.assertEqual(rpki_client["id"], "rpki-client-9_8")
+        self.assertEqual(rpki_client["version"], "9.8")
+        self.assertIn("rpki-client-9.8.tar.gz", rpki_client["script"])
+        self.assertIn("rpki-client-portable 9.8", rpki_client["script"])
 
 
 class ResourceUsageTests(unittest.TestCase):
