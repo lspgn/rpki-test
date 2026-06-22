@@ -30,9 +30,8 @@ from rpki_project import (
     utc_now,
     write_json,
 )
-from summarize_network_packets import DNS_FIELDS, FIELDS as NETWORK_PACKET_FIELDS
-from summarize_network_packets import read_dns_names_by_ip, read_packets, summarize_packets
-from summarize_tcp_bps import parse_tcptop
+from observability import DNS_FIELDS, FIELDS as NETWORK_PACKET_FIELDS
+from observability import parse_tcptop, read_dns_names_by_ip, read_packets, summarize_packets
 
 
 BYTE_UNITS = {
