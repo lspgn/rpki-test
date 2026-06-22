@@ -270,11 +270,13 @@ function seriesStats(values) {
   };
 }
 
-function statsLabel(stats, format) {
+function statsLabel(stats, format, includeMin = false) {
   if (!stats) {
     return "no samples";
   }
-  return `min ${format(stats.min)} / avg ${format(stats.avg)} / max ${format(stats.max)}`;
+  const parts = includeMin ? [`min ${format(stats.min)}`] : [];
+  parts.push(`avg ${format(stats.avg)}`, `max ${format(stats.max)}`);
+  return parts.join(" / ");
 }
 
 function sortedFlows(timeline) {
@@ -602,7 +604,7 @@ function renderTimelineChart(svg, timeline, entry) {
     title.textContent = config.label;
     lane.append(title);
     const max = svgElement("text", { x: 18, y: yTop + 38, class: "lane-max" });
-    max.textContent = statsLabel(stats, config.format);
+    max.textContent = statsLabel(stats, config.format, key === "pids");
     lane.append(max);
     const zero = svgElement("text", { x: left - 18, y: yBottom + 4, class: "axis-label" });
     zero.textContent = "0";
