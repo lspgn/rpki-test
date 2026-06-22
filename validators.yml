@@ -34,7 +34,7 @@
         "routerKeys": true,
         "aspas": true
       },
-      "script": "apk add --no-cache rpki-client=9.6-r0 rsync ca-certificates\nmkdir -p /work/cache /work/db /out/raw\nrpki-client -j -d /work/cache -s 3600 /work/db\ncp /work/db/json /out/raw/rpki-client.json"
+      "script": "apk add --no-cache rpki-client=9.6-r0 rsync ca-certificates\nmkdir -p /work/cache /work/db /out/raw\nchmod -R a+rwX /work/cache /work/db /out/raw\nrpki-client -j -d /work/cache -s 3600 /work/db\ncp /work/db/json /out/raw/rpki-client.json"
     },
     {
       "id": "fort-1_6_8",
@@ -48,7 +48,7 @@
         "routerKeys": true,
         "aspas": false
       },
-      "script": "mkdir -p /work/cache /work/tals /out/raw\nfort --init-tals=true --tal=/work/tals\nfort --mode=standalone --tal=/work/tals --local-repository=/work/cache/repository --output.roa=/out/raw/fort-roas.json --output.bgpsec=/out/raw/fort-bgpsec.json --output.format=json --log.output=console --log.level=info --validation-log.enabled=true --validation-log.output=console --validation-log.level=warning"
+      "script": "mkdir -p /work/cache /work/tals /out/raw\nfort --init-tals=true --tal=/work/tals\nfort --mode=standalone --tal=/work/tals --local-repository=/work/cache/repository --output.roa=/out/raw/fort-roas.json --output.bgpsec=/out/raw/fort-bgpsec.json --output.format=json --http.low-speed-limit=10000 --http.low-speed-time=60 --http.transfer-timeout=900 --log.output=console --log.level=info --validation-log.enabled=true --validation-log.output=console --validation-log.level=warning"
     }
   ]
 }

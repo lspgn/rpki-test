@@ -44,6 +44,25 @@ def docker_command(entry: dict[str, Any], output_dir: Path, work_dir: Path) -> l
     ]
 
 
+def permission_command(entry: dict[str, Any], output_dir: Path, work_dir: Path) -> list[str]:
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "--user",
+        "0",
+        "--entrypoint",
+        "/bin/sh",
+        "-v",
+        f"{output_dir.resolve()}:/out",
+        "-v",
+        f"{work_dir.resolve()}:/work",
+        entry["image"],
+        "-lc",
+        "chmod -R a+rwX /out /work",
+    ]
+
+
 def run_with_tee(command: list[str], timeout: int) -> tuple[int, str, str, bool]:
     print("::group::Validator command", flush=True)
     print(" ".join(shlex.quote(part) for part in command), flush=True)
@@ -91,6 +110,12 @@ def run_with_tee(command: list[str], timeout: int) -> tuple[int, str, str, bool]
     return returncode, "".join(stdout_chunks), "".join(stderr_chunks), timed_out
 
 
+def run_quiet(command: list[str], timeout: int) -> tuple[int, str]:
+    completed = subprocess.run(command, text=True, capture_output=True, timeout=timeout, check=False)
+    output = (completed.stdout or "") + (completed.stderr or "")
+    return completed.returncode, output
+
+
 def read_raw_json(raw_dir: Path) -> list[Any]:
     values = []
     for path in sorted(raw_dir.glob("*.json")):
@@ -110,11 +135,6 @@ def archive_work_dir(work_dir: Path, output_dir: Path) -> list[dict[str, Any]]:
     archive_dir = output_dir / "archives"
     archive_dir.mkdir(parents=True, exist_ok=True)
     archive_path = archive_dir / "work-cache.tar.gz"
-    for path in [work_dir, *work_dir.rglob("*")]:
-        if path.is_dir():
-            path.chmod(0o777)
-        elif path.is_file():
-            path.chmod(0o666)
     with tarfile.open(archive_path, "w:gz") as tar:
         for name in ("cache", "tals"):
             source = work_dir / name
@@ -150,6 +170,12 @@ def main() -> None:
         started_at = utc_now()
         started = time.monotonic()
         returncode, stdout, stderr, timed_out = run_with_tee(command, int(entry.get("timeout_seconds", 7200)))
+        permission_returncode, permission_output = run_quiet(permission_command(entry, output_dir, work_dir), 300)
+        if permission_output:
+            stderr += "\n::permission-normalization::\n" + permission_output
+        if permission_returncode != 0 and returncode == 0:
+            returncode = permission_returncode
+            stderr += "\nPermission normalization failed before cache archiving.\n"
         archives = archive_work_dir(work_dir, output_dir)
 
     finished_at = utc_now()
