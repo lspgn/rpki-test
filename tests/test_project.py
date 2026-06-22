@@ -238,7 +238,7 @@ class NetworkFlowSummaryTests(unittest.TestCase):
             dns.write_text(
                 "\t".join(DNS_FIELDS)
                 + "\n"
-                + "100.5\t192.0.2.53\t172.17.0.2\t53\t50000\trepo.example.net\t203.0.113.10\t\tcdn.example.net\n",
+                + "100.5\t192.0.2.53\t172.17.0.2\t53\t50000\trepo.example.net\t203.0.113.10\t\tcdn.example.net\t1\t1\n",
                 encoding="utf-8",
             )
 
@@ -320,7 +320,7 @@ class TimelineTests(unittest.TestCase):
             (ebpf / "dns-queries.tsv").write_text(
                 "\t".join(DNS_FIELDS)
                 + "\n"
-                + "1782086403.0\t192.0.2.53\t172.17.0.2\t53\t50000\trepo.example.net\t203.0.113.10\t\tcdn.example.net\n",
+                + "1782086403.0\t192.0.2.53\t172.17.0.2\t53\t50000\trepo.example.net\t203.0.113.10\t\tcdn.example.net\t1\t1\n",
                 encoding="utf-8",
             )
             write_json(
@@ -387,6 +387,8 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(timeline["buckets"][1]["pids"], 8)
         self.assertEqual(timeline["buckets"][1]["stderrCount"], 1)
         self.assertEqual(timeline["events"][0]["message"], "started")
+        self.assertEqual(timeline["network"]["dnsQueries"][0]["direction"], "response")
+        self.assertEqual(timeline["network"]["dnsQueries"][0]["queryType"], "A")
         self.assertEqual(timeline["network"]["dnsQueries"][0]["query"], "repo.example.net")
         self.assertEqual(timeline["network"]["dnsQueries"][0]["answers"], ["203.0.113.10", "cdn.example.net"])
         self.assertEqual(timeline["network"]["flows"][0]["dnsNames"], ["repo.example.net"])
@@ -590,7 +592,7 @@ class AggregateTests(unittest.TestCase):
                 (ebpf_dir / "dns-queries.tsv").write_text(
                     "\t".join(DNS_FIELDS)
                     + "\n"
-                    + "1782086401.0\t192.0.2.53\t172.17.0.2\t53\t50000\trepo.example.net\t203.0.113.10\t\t\n",
+                    + "1782086401.0\t192.0.2.53\t172.17.0.2\t53\t50000\trepo.example.net\t203.0.113.10\t\t\t1\t1\n",
                     encoding="utf-8",
                 )
                 write_json(
