@@ -38,6 +38,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Install observability report tooling
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark
+
       - name: Check observability tooling
         run: |
           python3 scripts/check_observability_tools.py --output "out/${{ matrix.id }}/ebpf"

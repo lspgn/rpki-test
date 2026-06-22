@@ -66,6 +66,22 @@ def command_version(command: str) -> str | None:
     return None
 
 
+def sudo_non_interactive() -> bool:
+    if shutil.which("sudo") is None:
+        return False
+    try:
+        completed = subprocess.run(
+            ["sudo", "-n", "true"],
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
 def collect_tooling_status() -> dict[str, Any]:
     commands = {}
     for command in COMMANDS:
@@ -77,6 +93,8 @@ def collect_tooling_status() -> dict[str, Any]:
         }
 
     is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+    sudo_available = sudo_non_interactive()
+    can_use_privilege = is_root or sudo_available
     kernel = platform.release()
     paths = {
         "/sys/fs/bpf": path_status("/sys/fs/bpf"),
@@ -91,9 +109,11 @@ def collect_tooling_status() -> dict[str, Any]:
         "platform": platform.platform(),
         "kernel": kernel,
         "isRoot": is_root,
+        "sudoNonInteractive": sudo_available,
+        "canUsePrivilege": can_use_privilege,
         "commands": commands,
         "kernelPaths": paths,
-        "canAttemptCapture": is_root and not missing,
+        "canAttemptCapture": can_use_privilege and not missing,
         "missingRequiredCommands": missing,
         "note": "This is a non-invasive preflight; it does not start packet capture or eBPF tracing.",
     }
@@ -105,6 +125,8 @@ def write_log(path: Path, status: dict[str, Any]) -> None:
         f"platform={status['platform']}",
         f"kernel={status['kernel']}",
         f"isRoot={status['isRoot']}",
+        f"sudoNonInteractive={status['sudoNonInteractive']}",
+        f"canUsePrivilege={status['canUsePrivilege']}",
         f"canAttemptCapture={status['canAttemptCapture']}",
     ]
     if status["missingRequiredCommands"]:

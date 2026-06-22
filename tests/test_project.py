@@ -135,6 +135,8 @@ class ObservabilityToolingTests(unittest.TestCase):
 
         self.assertIn("generatedAt", status)
         self.assertIn("isRoot", status)
+        self.assertIn("sudoNonInteractive", status)
+        self.assertIn("canUsePrivilege", status)
         self.assertIn("canAttemptCapture", status)
         self.assertIn("/sys/kernel/debug/tracing", status["kernelPaths"])
         self.assertIn("exists", status["kernelPaths"]["/sys/kernel/debug/tracing"])
