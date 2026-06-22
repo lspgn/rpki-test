@@ -17,6 +17,7 @@ let fileTree = null;
 let fileRows = [];
 let filePage = 0;
 let fileValidator = null;
+let timeRefreshTimer = null;
 const resourceCache = new Map();
 const resourceChunkCache = new Map();
 const fileCache = new Map();
@@ -24,6 +25,7 @@ const fileChunkCache = new Map();
 
 const formatter = new Intl.NumberFormat();
 const byteFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+const relativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: "always" });
 
 async function fetchJson(path) {
   const response = await fetch(path, { cache: "no-store" });
@@ -57,6 +59,36 @@ function formatDuration(seconds) {
   return `${byteFormatter.format(seconds / 60)}m`;
 }
 
+function parseTimestamp(value) {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatRelativeTime(value, now = new Date()) {
+  const date = parseTimestamp(value);
+  if (!date) {
+    return "unknown time";
+  }
+  const diffSeconds = Math.round((date.getTime() - now.getTime()) / 1000);
+  const absSeconds = Math.abs(diffSeconds);
+  if (absSeconds < 5) {
+    return "just now";
+  }
+  if (absSeconds < 60) {
+    return relativeTimeFormatter.format(diffSeconds, "second");
+  }
+  if (absSeconds < 3600) {
+    return relativeTimeFormatter.format(Math.round(diffSeconds / 60), "minute");
+  }
+  if (absSeconds < 86400) {
+    return relativeTimeFormatter.format(Math.round(diffSeconds / 3600), "hour");
+  }
+  return relativeTimeFormatter.format(Math.round(diffSeconds / 86400), "day");
+}
+
 function formatPercent(value) {
   return typeof value === "number" ? `${byteFormatter.format(value)}%` : "unknown";
 }
@@ -70,8 +102,29 @@ function metric(label, value) {
 }
 
 function setSubtitle(summary) {
-  const generated = summary.generatedAt ? new Date(summary.generatedAt).toLocaleString() : "unknown time";
-  document.querySelector("#subtitle").textContent = `${summary.id} generated ${generated}`;
+  const generated = parseTimestamp(summary.generatedAt);
+  const relative = formatRelativeTime(summary.generatedAt);
+  const exact = generated ? generated.toLocaleString() : "unknown time";
+  document.querySelector("#subtitle").textContent = `${summary.id} generated ${relative} (${exact})`;
+}
+
+function updateRunOptionLabels() {
+  const select = document.querySelector("#run-select");
+  const now = new Date();
+  for (const option of select.options) {
+    const relative = option.dataset.generatedAt ? ` - ${formatRelativeTime(option.dataset.generatedAt, now)}` : "";
+    const failed = option.dataset.success === "false" ? " (failed)" : "";
+    option.textContent = `${option.value}${relative}${failed}`;
+  }
+}
+
+function refreshTimes() {
+  if (currentSummary) {
+    setSubtitle(currentSummary);
+  }
+  if (manifest) {
+    updateRunOptionLabels();
+  }
 }
 
 function renderMetrics(summary) {
@@ -539,9 +592,11 @@ function setupRuns() {
   for (const run of manifest.runs || []) {
     const option = document.createElement("option");
     option.value = run.id;
-    option.textContent = `${run.id} ${run.success ? "" : "(failed)"}`;
+    option.dataset.generatedAt = run.generatedAt || "";
+    option.dataset.success = String(run.success);
     select.append(option);
   }
+  updateRunOptionLabels();
   select.value = manifest.latestRun;
   select.addEventListener("change", () => loadRun(select.value).catch(showError));
 }
@@ -555,6 +610,9 @@ async function main() {
   manifest = await fetchJson("data/manifest.json");
   setupRuns();
   await loadRun(manifest.latestRun);
+  if (!timeRefreshTimer) {
+    timeRefreshTimer = window.setInterval(refreshTimes, 1000);
+  }
 }
 
 main().catch(showError);
