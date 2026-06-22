@@ -26,7 +26,6 @@ const timelineCache = new Map();
 const timelineByValidator = new Map();
 const expandedFlowCharts = new Set();
 const collapsedTimelineProfiles = new Set();
-const COLLAPSED_FLOW_BINS = 96;
 const EXPANDED_FLOW_LIMIT = 80;
 
 const formatter = new Intl.NumberFormat();
@@ -439,9 +438,9 @@ function flowTotalBytes(flow) {
   return flow?.totalBytes || ((flow?.totalRxBytes || 0) + (flow?.totalTxBytes || 0));
 }
 
-function flowHeatBins(flows, duration, binCount = COLLAPSED_FLOW_BINS) {
-  const count = Math.max(1, binCount);
-  const secondsPerBin = Math.max(1, duration / count);
+function flowHeatBins(flows, duration, bucketSeconds) {
+  const secondsPerBin = Math.max(1, bucketSeconds || 10);
+  const count = Math.max(1, Math.ceil(duration / secondsPerBin));
   const bins = Array.from({ length: count }, (_, index) => ({
     index,
     start: index * secondsPerBin,
@@ -556,7 +555,7 @@ function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
   }
   const maxFlowBytes = Math.max(...flows.map(flowTotalBytes), 1);
   if (!expanded && flows.length) {
-    const bins = flowHeatBins(flows, duration);
+    const bins = flowHeatBins(flows, duration, bucketSeconds);
     const maxBinBytes = Math.max(...bins.map((bin) => bin.bytes), 1);
     bins.forEach((bin) => {
       if (!bin.bytes) {
@@ -622,9 +621,10 @@ function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
   svg.append(svgElement("rect", { x: left, y: logTop, width: plotWidth, height: logHeight, class: "log-lane" }));
   const logBottom = logTop + logHeight - 12;
   const logPlotHeight = logHeight - 24;
+  const totalLogCount = buckets.reduce((sum, bucket) => sum + (bucket.stdoutCount || 0) + (bucket.stderrCount || 0), 0);
   const maxLogCount = Math.max(...buckets.map((bucket) => (bucket.stdoutCount || 0) + (bucket.stderrCount || 0)), 1);
   const logMax = svgElement("text", { x: 18, y: logTop + 37, class: "lane-max" });
-  logMax.textContent = `max ${formatCount(maxLogCount)} per bucket`;
+  logMax.textContent = `total ${formatCount(totalLogCount)}`;
   svg.append(logMax);
   const logZero = svgElement("text", { x: left - 18, y: logBottom + 4, class: "axis-label" });
   logZero.textContent = "0";
@@ -677,9 +677,10 @@ function renderTimelineChart(svg, timeline, entry, scaleDuration = null) {
   svg.append(svgElement("rect", { x: left, y: dnsTop, width: plotWidth, height: dnsHeight, class: "dns-lane" }));
   const dnsBottom = dnsTop + dnsHeight - 12;
   const dnsPlotHeight = dnsHeight - 24;
+  const totalDnsCount = buckets.reduce((sum, bucket) => sum + (bucket.dnsQueryCount || 0), 0);
   const maxDnsCount = Math.max(...buckets.map((bucket) => bucket.dnsQueryCount || 0), 1);
   const dnsMax = svgElement("text", { x: 18, y: dnsTop + 37, class: "lane-max" });
-  dnsMax.textContent = `max ${formatCount(maxDnsCount)} per bucket`;
+  dnsMax.textContent = `total ${formatCount(totalDnsCount)}`;
   svg.append(dnsMax);
   const dnsZero = svgElement("text", { x: left - 18, y: dnsBottom + 4, class: "axis-label" });
   dnsZero.textContent = "0";
