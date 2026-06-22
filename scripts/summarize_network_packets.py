@@ -28,6 +28,18 @@ FIELDS = (
     "dns.qry.name",
 )
 
+DNS_FIELDS = (
+    "frame.time_epoch",
+    "ip.src",
+    "ip.dst",
+    "udp.srcport",
+    "udp.dstport",
+    "dns.qry.name",
+    "dns.a",
+    "dns.aaaa",
+    "dns.cname",
+)
+
 
 def parse_float(value: str) -> float | None:
     try:
@@ -45,6 +57,10 @@ def parse_int(value: str) -> int | None:
 
 def first_value(value: str) -> str:
     return value.split(",", 1)[0].strip()
+
+
+def split_values(value: str) -> list[str]:
+    return [part.strip().rstrip(".") for part in value.split(",") if part.strip()]
 
 
 def normalize_protocol(value: str, tcp_src: str, udp_src: str) -> str:
@@ -122,6 +138,37 @@ def read_packets(path: Path) -> list[dict[str, Any]]:
     return packets
 
 
+def read_dns_names_by_ip(path: Path) -> dict[str, set[str]]:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle, delimiter="\t")
+        rows = list(reader)
+
+    if not rows:
+        return {}
+
+    header = rows[0]
+    if header == list(DNS_FIELDS):
+        data_rows = rows[1:]
+        field_names = list(DNS_FIELDS)
+    else:
+        data_rows = rows
+        field_names = list(DNS_FIELDS)
+
+    names_by_ip: dict[str, set[str]] = defaultdict(set)
+    for row in data_rows:
+        padded = row + [""] * (len(field_names) - len(row))
+        item = dict(zip(field_names, padded))
+        names = set(split_values(item.get("dns.qry.name", "")))
+        names.update(split_values(item.get("dns.cname", "")))
+        if not names:
+            continue
+        for address in split_values(item.get("dns.a", "")):
+            names_by_ip[address].update(names)
+        for address in split_values(item.get("dns.aaaa", "")):
+            names_by_ip[address].update(names)
+    return dict(names_by_ip)
+
+
 def flow_identity(packet: dict[str, Any], container_ips: set[str]) -> dict[str, Any] | None:
     src_is_local = packet["src"] in container_ips
     dst_is_local = packet["dst"] in container_ips
@@ -152,8 +199,14 @@ def bucket_index(timestamp: float, first_timestamp: float, bucket_seconds: float
     return max(0, int(math.floor((timestamp - first_timestamp) / bucket_seconds)))
 
 
-def summarize_packets(packets: list[dict[str, Any]], container_ips: list[str], bucket_seconds: float) -> dict[str, Any]:
+def summarize_packets(
+    packets: list[dict[str, Any]],
+    container_ips: list[str],
+    bucket_seconds: float,
+    dns_names_by_ip: dict[str, set[str]] | None = None,
+) -> dict[str, Any]:
     local_ips = {ip for ip in container_ips if ip}
+    resolved_names = dns_names_by_ip or {}
     matched_packets = []
     ignored_packets = 0
     seen = set()
@@ -192,6 +245,7 @@ def summarize_packets(packets: list[dict[str, Any]], container_ips: list[str], b
             "maxRxBps": None,
             "minTxBps": None,
             "maxTxBps": None,
+            "dnsNameMappingCount": sum(len(names) for names in resolved_names.values()),
             "timeSeries": [],
             "flows": [],
         }
@@ -264,6 +318,8 @@ def summarize_packets(packets: list[dict[str, Any]], container_ips: list[str], b
         tx_rates = [sample["txBps"] for sample in samples]
         total_rx = flow["totalRxBytes"]
         total_tx = flow["totalTxBytes"]
+        candidate_dns_names = sorted(resolved_names.get(flow["remoteAddress"], set()))
+        direct_dns_names = sorted(flow["dnsNames"])
         output_flows.append(
             {
                 "protocol": flow["protocol"],
@@ -281,7 +337,9 @@ def summarize_packets(packets: list[dict[str, Any]], container_ips: list[str], b
                 "maxTxBps": max(tx_rates) if tx_rates else None,
                 "firstSeenEpoch": flow["firstSeen"],
                 "lastSeenEpoch": flow["lastSeen"],
-                "dnsNames": sorted(flow["dnsNames"]),
+                "dnsNames": sorted(set(direct_dns_names).union(candidate_dns_names)),
+                "directDnsNames": direct_dns_names,
+                "candidateDnsNames": candidate_dns_names,
                 "samples": samples,
             }
         )
@@ -322,6 +380,7 @@ def summarize_packets(packets: list[dict[str, Any]], container_ips: list[str], b
         "maxRxBps": max(rx_rates) if rx_rates else None,
         "minTxBps": min(tx_rates) if tx_rates else None,
         "maxTxBps": max(tx_rates) if tx_rates else None,
+        "dnsNameMappingCount": sum(len(names) for names in resolved_names.values()),
         "timeSeries": time_series,
         "flows": output_flows,
     }
@@ -332,11 +391,13 @@ def main() -> None:
     parser.add_argument("--input", required=True, help="tshark TSV packet fields")
     parser.add_argument("--output", required=True, help="JSON flow summary output")
     parser.add_argument("--container-ip", action="append", default=[], help="Container IP to use as local direction")
+    parser.add_argument("--dns-input", help="optional DNS TSV report with dns.a/dns.aaaa answer fields")
     parser.add_argument("--bucket-seconds", type=float, default=1.0)
     args = parser.parse_args()
 
     source = Path(args.input)
-    summary = summarize_packets(read_packets(source), args.container_ip, args.bucket_seconds)
+    dns_names_by_ip = read_dns_names_by_ip(Path(args.dns_input)) if args.dns_input else {}
+    summary = summarize_packets(read_packets(source), args.container_ip, args.bucket_seconds, dns_names_by_ip)
     summary["generatedAt"] = utc_now()
     summary["source"] = source.name
     write_json(args.output, summary)

@@ -54,13 +54,15 @@ Capture DNS queries and responses:
 
 ```sh
 sudo tcpdump -i any -nn -s 0 -w "out/routinator-0_15_2/ebpf/dns.pcap" '(udp port 53 or tcp port 53)'
-tshark -r "out/routinator-0_15_2/ebpf/dns.pcap" -Y dns -T fields \
-  -e frame.time_epoch -e ip.src -e ip.dst -e udp.srcport -e udp.dstport -e dns.qry.name \
+tshark -r "out/routinator-0_15_2/ebpf/dns.pcap" -Y dns -T fields -E separator=/t \
+  -e frame.time_epoch -e ip.src -e ip.dst -e udp.srcport -e udp.dstport \
+  -e dns.qry.name -e dns.a -e dns.aaaa -e dns.cname \
   > "out/routinator-0_15_2/ebpf/dns-queries.tsv"
 ```
 
 Keep `dns.pcap` local for investigation only. The workflow uploads
-`dns-queries.tsv`, not the full packet capture.
+`dns-queries.tsv`, not the full packet capture. DNS answer fields are used
+to annotate packet-derived network flows with `candidateDnsNames`.
 
 Capture packet headers for protocol, host, port, byte, and rate accounting:
 
@@ -73,7 +75,8 @@ tshark -r "out/routinator-0_15_2/ebpf/network.pcap" -Y 'tcp or udp' -T fields -E
 python3 scripts/summarize_network_packets.py \
   --input "out/routinator-0_15_2/ebpf/network-packets.tsv" \
   --output "out/routinator-0_15_2/ebpf/network-flows.json" \
-  --container-ip "$container_ip"
+  --container-ip "$container_ip" \
+  --dns-input "out/routinator-0_15_2/ebpf/dns-queries.tsv"
 ```
 
 Keep `network.pcap` and `network-packets.tsv` local for investigation only.

@@ -29,8 +29,8 @@ from rpki_project import (
     utc_now,
     write_json,
 )
-from summarize_network_packets import FIELDS as NETWORK_PACKET_FIELDS
-from summarize_network_packets import summarize_packets, read_packets
+from summarize_network_packets import DNS_FIELDS, FIELDS as NETWORK_PACKET_FIELDS
+from summarize_network_packets import read_dns_names_by_ip, read_packets, summarize_packets
 from summarize_tcp_bps import parse_tcptop
 
 
@@ -445,19 +445,11 @@ class ObservabilityCapture:
             "dns",
             "-T",
             "fields",
-            "-e",
-            "frame.time_epoch",
-            "-e",
-            "ip.src",
-            "-e",
-            "ip.dst",
-            "-e",
-            "udp.srcport",
-            "-e",
-            "udp.dstport",
-            "-e",
-            "dns.qry.name",
+            "-E",
+            "separator=/t",
         ]
+        for field in DNS_FIELDS:
+            command.extend(["-e", field])
         try:
             with output.open("w", encoding="utf-8") as handle:
                 completed = subprocess.run(command, text=True, stdout=handle, stderr=subprocess.PIPE, timeout=120, check=False)
@@ -529,7 +521,9 @@ class ObservabilityCapture:
             self.log("network flow report skipped because packet TSV is missing or empty")
             return
         try:
-            summary = summarize_packets(read_packets(source), self.container_ips, bucket_seconds=1.0)
+            dns_report = self.ebpf_dir / "dns-queries.tsv"
+            dns_names_by_ip = read_dns_names_by_ip(dns_report) if dns_report.exists() else {}
+            summary = summarize_packets(read_packets(source), self.container_ips, bucket_seconds=1.0, dns_names_by_ip=dns_names_by_ip)
             summary["generatedAt"] = utc_now()
             summary["source"] = source.name
             write_json(output, summary)

@@ -16,7 +16,8 @@ from aggregate_results import main as aggregate_main  # noqa: E402
 from check_observability_tools import collect_tooling_status  # noqa: E402
 from rpki_project import load_config, normalize_payloads, payload_counts, read_json, validators, write_json  # noqa: E402
 from run_validator import archive_work_dir, parse_bytes, summarize_docker_stats  # noqa: E402
-from summarize_network_packets import read_packets, summarize_packets  # noqa: E402
+from summarize_network_packets import DNS_FIELDS, FIELDS as NETWORK_PACKET_FIELDS  # noqa: E402
+from summarize_network_packets import read_dns_names_by_ip, read_packets, summarize_packets  # noqa: E402
 from summarize_tcp_bps import parse_tcptop  # noqa: E402
 
 
@@ -135,22 +136,7 @@ class NetworkFlowSummaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "packets.tsv"
             source.write_text(
-                "\t".join(
-                    (
-                        "frame.time_epoch",
-                        "frame.len",
-                        "ip.src",
-                        "ip.dst",
-                        "ipv6.src",
-                        "ipv6.dst",
-                        "tcp.srcport",
-                        "tcp.dstport",
-                        "udp.srcport",
-                        "udp.dstport",
-                        "_ws.col.Protocol",
-                        "dns.qry.name",
-                    )
-                )
+                "\t".join(NETWORK_PACKET_FIELDS)
                 + "\n"
                 + "100.0\t60\t172.17.0.2\t192.0.2.53\t\t\t\t\t50000\t53\tDNS\texample.net\n"
                 + "100.5\t120\t192.0.2.53\t172.17.0.2\t\t\t\t\t53\t50000\tDNS\texample.net\n"
@@ -160,8 +146,20 @@ class NetworkFlowSummaryTests(unittest.TestCase):
                 + "101.8\t900\t10.1.0.1\t198.51.100.1\t\t\t12345\t443\t\t\tTCP\t\n",
                 encoding="utf-8",
             )
+            dns = Path(tmp) / "dns.tsv"
+            dns.write_text(
+                "\t".join(DNS_FIELDS)
+                + "\n"
+                + "100.5\t192.0.2.53\t172.17.0.2\t53\t50000\trepo.example.net\t203.0.113.10\t\tcdn.example.net\n",
+                encoding="utf-8",
+            )
 
-            summary = summarize_packets(read_packets(source), ["172.17.0.2"], bucket_seconds=1.0)
+            summary = summarize_packets(
+                read_packets(source),
+                ["172.17.0.2"],
+                bucket_seconds=1.0,
+                dns_names_by_ip=read_dns_names_by_ip(dns),
+            )
 
         self.assertEqual(summary["packetCount"], 6)
         self.assertEqual(summary["matchedPacketCount"], 4)
@@ -176,8 +174,11 @@ class NetworkFlowSummaryTests(unittest.TestCase):
         self.assertEqual(tcp_flow["remotePort"], 443)
         self.assertEqual(tcp_flow["totalRxBytes"], 1000)
         self.assertEqual(tcp_flow["totalTxBytes"], 500)
+        self.assertEqual(tcp_flow["candidateDnsNames"], ["cdn.example.net", "repo.example.net"])
+        self.assertEqual(tcp_flow["dnsNames"], ["cdn.example.net", "repo.example.net"])
         dns_flow = next(flow for flow in summary["flows"] if flow["protocol"] == "UDP")
         self.assertEqual(dns_flow["dnsNames"], ["example.net"])
+        self.assertEqual(dns_flow["directDnsNames"], ["example.net"])
 
 
 class ObservabilityToolingTests(unittest.TestCase):
