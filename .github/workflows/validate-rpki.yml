@@ -41,6 +41,44 @@ jobs:
       - name: Run validator
         run: python3 scripts/run_validator.py --config validators.yml --entry-id "${{ matrix.id }}" --output "out/${{ matrix.id }}" || true
 
+      - name: Ensure validator result metadata
+        if: always()
+        env:
+          ENTRY_ID: ${{ matrix.id }}
+          VALIDATOR: ${{ matrix.validator }}
+          VERSION: ${{ matrix.version }}
+          LABEL: ${{ matrix.label }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          out = Path("out") / os.environ["ENTRY_ID"]
+          out.mkdir(parents=True, exist_ok=True)
+          for name in ("stdout.log", "stderr.log"):
+              (out / name).touch()
+          status = out / "status.json"
+          if not status.exists():
+              now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+              status.write_text(json.dumps({
+                  "id": os.environ["ENTRY_ID"],
+                  "validator": os.environ["VALIDATOR"],
+                  "version": os.environ["VERSION"],
+                  "label": os.environ["LABEL"],
+                  "startedAt": now,
+                  "finishedAt": now,
+                  "durationSeconds": 0,
+                  "exitCode": 70,
+                  "timedOut": False,
+                  "success": False,
+                  "rawFiles": [],
+                  "archives": [],
+                  "normalizationError": "validator runner exited before writing status.json"
+              }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+
       - name: Upload validator result
         uses: actions/upload-artifact@v7
         if: always()
@@ -107,6 +145,7 @@ jobs:
   deploy:
     name: Deploy GitHub Pages
     needs: aggregate
+    if: ${{ always() && needs.aggregate.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       pages: write
