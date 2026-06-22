@@ -30,7 +30,7 @@ def find_result_dirs(results_dir: Path) -> list[Path]:
 
 def copy_result(result_dir: Path, target_dir: Path) -> dict[str, Any]:
     target_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("status.json", "normalized.json", "stdout.log", "stderr.log"):
+    for name in ("status.json", "normalized.json", "stdout.log", "stderr.log", "resource-usage.json", "docker-stats.jsonl"):
         source = result_dir / name
         if source.exists():
             shutil.copy2(source, target_dir / name)
@@ -160,6 +160,11 @@ def main() -> None:
             for path in sorted(entry_dir.glob("*.log"))
             if path.name not in {"stdout.log", "stderr.log"}
         ]
+        observability_paths = [
+            f"data/runs/{run_id}/{copied_status['id']}/{name}"
+            for name in ("resource-usage.json", "docker-stats.jsonl")
+            if (entry_dir / name).exists()
+        ]
         entries.append(
             {
                 "id": copied_status["id"],
@@ -169,6 +174,7 @@ def main() -> None:
                 "success": copied_status.get("success", False),
                 "exitCode": copied_status.get("exitCode"),
                 "durationSeconds": copied_status.get("durationSeconds"),
+                "resourceUsage": copied_status.get("resourceUsage", {}),
                 "payloads": copied_status.get("payloads", {}),
                 "unsupported": copied_status.get("unsupported", []),
                 "counts": counts,
@@ -179,6 +185,7 @@ def main() -> None:
                     "stderr": f"data/runs/{run_id}/{copied_status['id']}/stderr.log",
                     "raw": raw_paths,
                     "logs": extra_logs,
+                    "observability": observability_paths,
                 },
                 "normalized": normalized,
             }

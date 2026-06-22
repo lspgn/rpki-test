@@ -32,8 +32,15 @@ The workflow publishes:
 - `data/runs/<run-id>/<validator-id>/normalized.json`: common payload schema
 - `data/runs/<run-id>/<validator-id>/raw/*.json.gz`: compressed native validator output
 - logs and status metadata for every validator/version
+- `resource-usage.json` and `docker-stats.jsonl` for CPU, RAM, PID, and network sizing
 
 History is retained as long as the generated Pages site stays below the configured size cap. The workflow defaults to `996147200` bytes, leaving headroom under GitHub Pages' 1 GB published-site limit.
+
+## Observability
+
+Each validator run samples `docker stats` and calculates peak RAM, peak CPU cores, mean CPU cores, and mean network throughput. The dashboard shows the peak CPU/RAM values per validator, and the raw sizing artifacts are published next to each run.
+
+See `docs/observability.md` for the optional privileged eBPF workflow covering DNS capture, per-IP/port throughput, syscall counts, and allocation tracing.
 
 ## Local Tests
 

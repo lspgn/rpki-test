@@ -18,6 +18,27 @@ async function fetchJson(path) {
   return response.json();
 }
 
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes)) {
+    return "n/a";
+  }
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let value = bytes;
+  let unit = units[0];
+  for (let index = 1; index < units.length && value >= 1024; index += 1) {
+    value /= 1024;
+    unit = units[index];
+  }
+  return `${value >= 10 || unit === "B" ? value.toFixed(0) : value.toFixed(1)} ${unit}`;
+}
+
+function formatCores(cores) {
+  if (!Number.isFinite(cores)) {
+    return "n/a";
+  }
+  return `${cores.toFixed(2)} cores`;
+}
+
 function metric(label, value) {
   const template = document.querySelector("#metric-template");
   const node = template.content.firstElementChild.cloneNode(true);
@@ -37,11 +58,15 @@ function renderMetrics(summary) {
   const successful = summary.entries.filter((entry) => entry.success).length;
   const totalForPayload = summary.entries.reduce((sum, entry) => sum + (entry.counts[currentPayload] || 0), 0);
   const unsupported = summary.entries.filter((entry) => (entry.unsupported || []).includes(currentPayload)).length;
+  const peakCpu = Math.max(...summary.entries.map((entry) => entry.resourceUsage?.peakProcessorCores).filter(Number.isFinite), 0);
+  const peakMemory = Math.max(...summary.entries.map((entry) => entry.resourceUsage?.peakMemoryBytes).filter(Number.isFinite), 0);
   grid.append(
     metric("Validators", formatter.format(summary.entries.length)),
     metric("Successful", `${successful}/${summary.entries.length}`),
     metric(payloadLabels[currentPayload], formatter.format(totalForPayload)),
     metric("Unsupported", formatter.format(unsupported)),
+    metric("Peak CPU", formatCores(peakCpu)),
+    metric("Peak RAM", formatBytes(peakMemory)),
   );
 }
 
@@ -71,12 +96,14 @@ function renderEntries(summary) {
       <td>${entry.label}</td>
       <td>${entry.version}</td>
       <td></td>
+      <td>${formatCores(entry.resourceUsage?.peakProcessorCores)}</td>
+      <td>${formatBytes(entry.resourceUsage?.peakMemoryBytes)}</td>
       <td>${unsupported ? '<span class="muted">unsupported</span>' : formatter.format(entry.counts[currentPayload] || 0)}</td>
       <td>${(entry.unsupported || []).length ? entry.unsupported.join(", ") : '<span class="muted">none</span>'}</td>
       <td></td>
     `;
     row.children[2].replaceChildren(status);
-    row.children[5].replaceChildren(downloads);
+    row.children[7].replaceChildren(downloads);
     tbody.append(row);
   }
 }

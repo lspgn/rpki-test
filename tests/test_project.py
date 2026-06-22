@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from aggregate_results import main as aggregate_main  # noqa: E402
 from rpki_project import load_config, normalize_payloads, payload_counts, read_json, validators, write_json  # noqa: E402
-from run_validator import archive_work_dir  # noqa: E402
+from run_validator import archive_work_dir, parse_bytes, summarize_docker_stats  # noqa: E402
 
 
 class NormalizationTests(unittest.TestCase):
@@ -66,6 +66,40 @@ class ConfigTests(unittest.TestCase):
             self.assertIn("payloads", entry)
 
 
+class ResourceUsageTests(unittest.TestCase):
+    def test_parse_docker_byte_units(self) -> None:
+        self.assertEqual(parse_bytes("1.5MiB"), 1572864)
+        self.assertEqual(parse_bytes("2 GB"), 2000000000)
+        self.assertIsNone(parse_bytes("unknown"))
+
+    def test_summarize_docker_stats_calculates_peaks_and_rates(self) -> None:
+        samples = [
+            {
+                "_monotonic": 10.0,
+                "CPUPerc": "25.00%",
+                "MemUsage": "128MiB / 2GiB",
+                "NetIO": "100B / 200B",
+                "PIDs": "4",
+            },
+            {
+                "_monotonic": 14.0,
+                "CPUPerc": "150.00%",
+                "MemUsage": "256MiB / 2GiB",
+                "NetIO": "500B / 1000B",
+                "PIDs": "8",
+            },
+        ]
+
+        summary = summarize_docker_stats(samples)
+
+        self.assertEqual(summary["sampleCount"], 2)
+        self.assertEqual(summary["peakProcessorCores"], 1.5)
+        self.assertEqual(summary["peakMemoryBytes"], 268435456)
+        self.assertEqual(summary["meanNetworkRxBps"], 100)
+        self.assertEqual(summary["meanNetworkTxBps"], 200)
+        self.assertEqual(summary["peakPids"], 8)
+
+
 class AggregateTests(unittest.TestCase):
     def test_fixture_site_build(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -93,10 +127,17 @@ class AggregateTests(unittest.TestCase):
                     "success": True,
                     "exitCode": 0,
                     "durationSeconds": 1,
+                    "resourceUsage": {
+                        "peakProcessorCores": 1.25,
+                        "peakMemoryBytes": 268435456,
+                        "sampleCount": 2,
+                    },
                     "payloads": payloads,
                     "unsupported": [name for name, supported in payloads.items() if supported is False],
                 }
                 write_json(out / "status.json", status)
+                write_json(out / "resource-usage.json", status["resourceUsage"])
+                (out / "docker-stats.jsonl").write_text("", encoding="utf-8")
                 write_json(out / "normalized.json", normalize_payloads([raw], {**status, "image": "fixture"}))
                 (out / "stdout.log").write_text("", encoding="utf-8")
                 (out / "stderr.log").write_text("", encoding="utf-8")
@@ -124,6 +165,8 @@ class AggregateTests(unittest.TestCase):
             latest = read_json(public / "data/latest.json")
             self.assertEqual(manifest["latestRun"], "fixture-run")
             self.assertEqual(len(latest["entries"]), 2)
+            self.assertEqual(latest["entries"][0]["resourceUsage"]["peakProcessorCores"], 1.25)
+            self.assertIn("resource-usage.json", latest["entries"][0]["paths"]["observability"][0])
             self.assertTrue((public / "index.html").exists())
 
 

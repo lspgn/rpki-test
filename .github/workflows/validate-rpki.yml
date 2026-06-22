@@ -59,6 +59,26 @@ jobs:
           out.mkdir(parents=True, exist_ok=True)
           for name in ("stdout.log", "stderr.log"):
               (out / name).touch()
+          (out / "docker-stats.jsonl").touch()
+          default_resource_usage = {
+              "sampleCount": 0,
+              "sampleSpanSeconds": 0,
+              "meanCpuPercent": None,
+              "peakCpuPercent": None,
+              "meanProcessorCores": None,
+              "peakProcessorCores": None,
+              "meanMemoryBytes": None,
+              "peakMemoryBytes": None,
+              "memoryLimitBytes": None,
+              "networkRxBytes": None,
+              "networkTxBytes": None,
+              "meanNetworkRxBps": None,
+              "meanNetworkTxBps": None,
+              "peakPids": None,
+          }
+          resource_usage = out / "resource-usage.json"
+          if not resource_usage.exists():
+              resource_usage.write_text(json.dumps(default_resource_usage, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           status = out / "status.json"
           if not status.exists():
               now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -75,8 +95,13 @@ jobs:
                   "success": False,
                   "rawFiles": [],
                   "archives": [],
+                  "resourceUsage": default_resource_usage,
                   "normalizationError": "validator runner exited before writing status.json"
               }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          else:
+              status_data = json.loads(status.read_text(encoding="utf-8"))
+              status_data.setdefault("resourceUsage", json.loads(resource_usage.read_text(encoding="utf-8")))
+              status.write_text(json.dumps(status_data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           PY
 
       - name: Upload validator result
@@ -88,6 +113,8 @@ jobs:
             out/${{ matrix.id }}/status.json
             out/${{ matrix.id }}/stdout.log
             out/${{ matrix.id }}/stderr.log
+            out/${{ matrix.id }}/resource-usage.json
+            out/${{ matrix.id }}/docker-stats.jsonl
             out/${{ matrix.id }}/*.log
             out/${{ matrix.id }}/normalized.json
             out/${{ matrix.id }}/raw/*.json
