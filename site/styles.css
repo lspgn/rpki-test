@@ -68,7 +68,8 @@ main {
   text-transform: uppercase;
 }
 
-select {
+select,
+input {
   min-height: 38px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -137,6 +138,45 @@ select {
   background: var(--panel);
 }
 
+.view {
+  display: none;
+}
+
+.view.is-active {
+  display: block;
+}
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 28px;
+}
+
+.section-head h2 {
+  margin-top: 0;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: minmax(160px, 220px) minmax(240px, 1fr) minmax(160px, 220px);
+  gap: 10px;
+  margin: 0 0 12px;
+}
+
+.controls label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.search-control {
+  min-width: min(520px, 100%);
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -162,12 +202,27 @@ tr:last-child td {
   border-bottom: 0;
 }
 
-.presence-table {
-  min-width: 900px;
+.validators-table {
+  min-width: 1220px;
 }
 
-.presence-table .is-divergent td {
+.resources-table {
+  min-width: 1080px;
+}
+
+.files-table {
+  min-width: 980px;
+}
+
+.resources-table .is-divergent td {
   background: #fff7df;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 a {
@@ -238,6 +293,10 @@ a:hover {
 
   .summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .controls {
+    grid-template-columns: 1fr;
   }
 }
 

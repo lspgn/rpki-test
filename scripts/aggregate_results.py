@@ -119,7 +119,15 @@ def cache_tree_from_archive(archive_path: Path, target_path: Path) -> dict[str, 
 
 def copy_result(result_dir: Path, target_dir: Path) -> dict[str, Any]:
     target_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("status.json", "normalized.json", "stdout.log", "stderr.log", "cache-tree.json"):
+    for name in (
+        "status.json",
+        "normalized.json",
+        "stdout.log",
+        "stderr.log",
+        "cache-tree.json",
+        "resource-usage.json",
+        "docker-stats.jsonl",
+    ):
         source = result_dir / name
         if source.exists():
             shutil.copy2(source, target_dir / name)
@@ -206,6 +214,30 @@ def object_label(payload: str, item: dict[str, Any]) -> str:
     raise ValueError(f"unknown payload: {payload}")
 
 
+def source_files(item: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = []
+    for key in ("sourceFiles", "source_files", "files"):
+        value = item.get(key)
+        if isinstance(value, list):
+            candidates.extend(value)
+    source = item.get("source")
+    if isinstance(source, dict):
+        for key in ("path", "uri", "url", "sha256"):
+            if key in source:
+                candidates.append(source)
+                break
+    output = []
+    for value in candidates:
+        if isinstance(value, str):
+            output.append({"path": value})
+        elif isinstance(value, dict):
+            path = value.get("path") or value.get("uri") or value.get("url")
+            sha256 = value.get("sha256") or value.get("hash")
+            if path or sha256:
+                output.append({"path": path, "sha256": sha256})
+    return output
+
+
 def report_object_key(payload: str, item: dict[str, Any]) -> str:
     if payload == "routeOrigins":
         return f"{item.get('asn')}|{item.get('prefix')}|{item.get('maxLength')}"
@@ -223,6 +255,15 @@ def build_object_report(payload: str, entries: list[dict[str, Any]]) -> dict[str
         for entry in entries
         if entry["success"] and payload not in (entry.get("unsupported") or [])
     ]
+    excluded = []
+    for entry in entries:
+        reason = None
+        if not entry["success"]:
+            reason = f"failed {entry.get('exitCode')}"
+        elif payload in (entry.get("unsupported") or []):
+            reason = "unsupported"
+        if reason:
+            excluded.append({"id": entry["id"], "label": entry["label"], "reason": reason})
     eligible_ids = [entry["id"] for entry in eligible]
     objects: dict[str, dict[str, Any]] = {}
     seen_by: dict[str, set[str]] = {}
@@ -245,18 +286,19 @@ def build_object_report(payload: str, entries: list[dict[str, Any]]) -> dict[str
                 "seenBy": seen,
                 "missingFrom": missing,
                 "divergent": bool(missing),
+                "sourceFiles": source_files(item),
             }
         )
     rows.sort(key=lambda row: (not row["divergent"], row["label"], row["key"]))
     differing = sum(1 for row in rows if row["divergent"])
-    visible_rows = [row for row in rows if row["divergent"]]
     return {
         "payload": payload,
         "eligibleValidators": eligible_ids,
+        "excludedValidators": excluded,
         "totalObjects": len(rows),
         "differingObjects": differing,
-        "includedRows": len(visible_rows),
-        "rows": visible_rows,
+        "includedRows": len(rows),
+        "rows": rows,
     }
 
 
@@ -270,11 +312,44 @@ def write_object_reports(run_dir: Path, run_id: str, entries: list[dict[str, Any
         reports[payload] = {
             "path": f"data/runs/{run_id}/reports/{payload}.json",
             "eligibleValidators": report["eligibleValidators"],
+            "excludedValidators": report["excludedValidators"],
             "totalObjects": report["totalObjects"],
             "differingObjects": report["differingObjects"],
             "includedRows": report["includedRows"],
         }
     return reports
+
+
+def validator_metrics(status: dict[str, Any], cache_tree: dict[str, Any] | None) -> dict[str, Any]:
+    usage = status.get("resourceUsage") or {}
+    rx = usage.get("networkRxBytes")
+    tx = usage.get("networkTxBytes")
+    exchanged = None
+    if isinstance(rx, int) or isinstance(tx, int):
+        exchanged = (rx or 0) + (tx or 0)
+    return {
+        "durationSeconds": status.get("durationSeconds"),
+        "bytesExchanged": exchanged,
+        "networkRxBytes": rx,
+        "networkTxBytes": tx,
+        "bytesOnDisk": cache_tree.get("size") if cache_tree else None,
+        "memoryPeakBytes": usage.get("peakMemoryBytes"),
+        "memoryMeanBytes": usage.get("meanMemoryBytes"),
+        "cpuPeakPercent": usage.get("peakCpuPercent"),
+        "cpuMeanPercent": usage.get("meanCpuPercent"),
+    }
+
+
+def load_resource_usage(entry_dir: Path, status: dict[str, Any]) -> dict[str, Any]:
+    usage = status.get("resourceUsage")
+    if isinstance(usage, dict):
+        return usage
+    path = entry_dir / "resource-usage.json"
+    if path.exists():
+        value = read_json(path)
+        if isinstance(value, dict):
+            return value
+    return {}
 
 
 def main() -> None:
@@ -317,6 +392,11 @@ def main() -> None:
             f"data/runs/{run_id}/{copied_status['id']}/{path.name}"
             for path in sorted(entry_dir.glob("*.log"))
             if path.name not in {"stdout.log", "stderr.log"}
+        ]
+        support_files = [
+            f"data/runs/{run_id}/{copied_status['id']}/{path.name}"
+            for path in (entry_dir / "resource-usage.json", entry_dir / "docker-stats.jsonl")
+            if path.exists()
         ]
         cache_tree_path = None
         cache_tree_metadata = copied_status.get("cacheTree") or None
@@ -361,6 +441,7 @@ def main() -> None:
                 "unsupported": copied_status.get("unsupported", []),
                 "counts": counts,
                 "cacheTree": cache_tree_metadata,
+                "metrics": validator_metrics({**copied_status, "resourceUsage": load_resource_usage(entry_dir, copied_status)}, cache_tree_metadata),
                 "paths": {
                     "status": f"data/runs/{run_id}/{copied_status['id']}/status.json",
                     "normalized": f"data/runs/{run_id}/{copied_status['id']}/normalized.json",
@@ -368,6 +449,7 @@ def main() -> None:
                     "stderr": f"data/runs/{run_id}/{copied_status['id']}/stderr.log",
                     "raw": raw_paths,
                     "logs": extra_logs,
+                    "support": support_files,
                     "cacheTree": cache_tree_path,
                 },
                 "normalized": normalized,

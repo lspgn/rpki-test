@@ -136,7 +136,8 @@ class AggregateTests(unittest.TestCase):
             self.assertEqual(len(latest["entries"]), 2)
             self.assertEqual(latest["reports"]["routeOrigins"]["totalObjects"], 2)
             self.assertEqual(latest["reports"]["routeOrigins"]["differingObjects"], 1)
-            self.assertEqual(latest["reports"]["routeOrigins"]["includedRows"], 1)
+            self.assertEqual(latest["reports"]["routeOrigins"]["includedRows"], 2)
+            self.assertEqual(latest["reports"]["aspas"]["excludedValidators"][0]["reason"], "unsupported")
             extra = [row for row in report["rows"] if row["object"]["prefix"] == "198.51.100.0/24"][0]
             self.assertEqual(extra["seenBy"], ["routinator-test"])
             self.assertEqual(extra["missingFrom"], ["fort-test"])
