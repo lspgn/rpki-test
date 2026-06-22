@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import subprocess
+import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -37,6 +40,53 @@ def docker_command(entry: dict[str, Any], output_dir: Path) -> list[str]:
     ]
 
 
+def run_with_tee(command: list[str], timeout: int) -> tuple[int, str, str, bool]:
+    print("::group::Validator command", flush=True)
+    print(" ".join(shlex.quote(part) for part in command), flush=True)
+    print("::endgroup::", flush=True)
+
+    process = subprocess.Popen(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=1,
+    )
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+
+    def reader(stream: Any, target: Any, chunks: list[str]) -> None:
+        try:
+            for line in stream:
+                chunks.append(line)
+                target.write(line)
+                target.flush()
+        finally:
+            stream.close()
+
+    stdout_thread = threading.Thread(target=reader, args=(process.stdout, sys.stdout, stdout_chunks))
+    stderr_thread = threading.Thread(target=reader, args=(process.stderr, sys.stderr, stderr_chunks))
+    stdout_thread.start()
+    stderr_thread.start()
+
+    timed_out = False
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        returncode = 124
+        process.kill()
+        process.wait()
+        timeout_line = f"\nTimed out after {timeout} seconds.\n"
+        stderr_chunks.append(timeout_line)
+        sys.stderr.write(timeout_line)
+        sys.stderr.flush()
+
+    stdout_thread.join(timeout=10)
+    stderr_thread.join(timeout=10)
+    return returncode, "".join(stdout_chunks), "".join(stderr_chunks), timed_out
+
+
 def read_raw_json(raw_dir: Path) -> list[Any]:
     values = []
     for path in sorted(raw_dir.glob("*.json")):
@@ -60,25 +110,7 @@ def main() -> None:
     command = docker_command(entry, output_dir)
     started_at = utc_now()
     started = time.monotonic()
-    timed_out = False
-    returncode = 0
-
-    try:
-        completed = subprocess.run(
-            command,
-            text=True,
-            capture_output=True,
-            timeout=int(entry.get("timeout_seconds", 7200)),
-            check=False,
-        )
-        stdout = completed.stdout
-        stderr = completed.stderr
-        returncode = completed.returncode
-    except subprocess.TimeoutExpired as exc:
-        timed_out = True
-        returncode = 124
-        stdout = exc.stdout or ""
-        stderr = (exc.stderr or "") + f"\nTimed out after {entry.get('timeout_seconds')} seconds.\n"
+    returncode, stdout, stderr, timed_out = run_with_tee(command, int(entry.get("timeout_seconds", 7200)))
 
     finished_at = utc_now()
     duration = round(time.monotonic() - started, 3)
