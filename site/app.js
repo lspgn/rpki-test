@@ -394,6 +394,16 @@ function dnsLines(group) {
   ];
 }
 
+function dnsBucketLines(bucket, group) {
+  if (group?.values?.length) {
+    return dnsLines(group);
+  }
+  return [
+    `${formatOffset(bucket.startOffsetSeconds)}-${formatOffset(bucket.endOffsetSeconds)} DNS`,
+    `${formatCount(bucket.dnsQueryCount || 0)} queries`,
+  ];
+}
+
 function bucketTooltipLines(entry, bucket, configs, lanes) {
   return [
     `${entry?.label || "Validator"} ${formatOffset(bucket.startOffsetSeconds)}-${formatOffset(bucket.endOffsetSeconds)}`,
@@ -489,6 +499,8 @@ function renderTimelineChart(svg, timeline, entry) {
   const dnsQueries = timeline?.network?.dnsQueries || [];
   const logGroups = groupedByBucket(events, timeline?.bucketSeconds || 10, (event) => event.offsetSeconds);
   const logGroupByIndex = new Map(logGroups.map((group) => [group.index, group]));
+  const dnsGroups = groupedByBucket(dnsQueries, timeline?.bucketSeconds || 10, (query) => query.offsetSeconds);
+  const dnsGroupByIndex = new Map(dnsGroups.map((group) => [group.index, group]));
   if (!buckets.length && !flows.length && !events.length) {
     svg.setAttribute("viewBox", "0 0 980 120");
     svg.append(svgElement("text", { x: 24, y: 64, class: "timeline-empty" }));
@@ -514,7 +526,9 @@ function renderTimelineChart(svg, timeline, entry) {
     : 28;
   const logTop = flowTop + flowHeight + 22;
   const logHeight = 58;
-  const laneTop = logTop + logHeight + 22;
+  const dnsTop = logTop + logHeight + 22;
+  const dnsHeight = 58;
+  const laneTop = dnsTop + dnsHeight + 22;
   const laneHeight = 66;
   const height = laneTop + laneHeight * lanes.length + 34;
   const plotWidth = width - left - right;
@@ -656,6 +670,41 @@ function renderTimelineChart(svg, timeline, entry) {
   });
   svg.append(svgElement("line", { x1: left, x2: width - right, y1: logBottom, y2: logBottom, class: "axis" }));
 
+  const dnsLabel = svgElement("text", { x: 18, y: dnsTop + 17, class: "lane-label" });
+  dnsLabel.textContent = "DNS";
+  svg.append(dnsLabel);
+  svg.append(svgElement("rect", { x: left, y: dnsTop, width: plotWidth, height: dnsHeight, class: "dns-lane" }));
+  const dnsBottom = dnsTop + dnsHeight - 12;
+  const dnsPlotHeight = dnsHeight - 24;
+  const maxDnsCount = Math.max(...buckets.map((bucket) => bucket.dnsQueryCount || 0), 1);
+  const dnsMax = svgElement("text", { x: 18, y: dnsTop + 37, class: "lane-max" });
+  dnsMax.textContent = `max ${formatCount(maxDnsCount)} per bucket`;
+  svg.append(dnsMax);
+  const dnsZero = svgElement("text", { x: left - 18, y: dnsBottom + 4, class: "axis-label" });
+  dnsZero.textContent = "0";
+  svg.append(dnsZero);
+  buckets.forEach((bucket) => {
+    const total = bucket.dnsQueryCount || 0;
+    if (!total) {
+      return;
+    }
+    const x = xForOffset(bucket.startOffsetSeconds || 0);
+    const groupIndex = Math.floor((bucket.startOffsetSeconds || 0) / (bucketSeconds || 10));
+    const group = dnsGroupByIndex.get(groupIndex);
+    const bucketWidth = Math.max(2, xForOffset(bucket.endOffsetSeconds || ((bucket.startOffsetSeconds || 0) + bucketSeconds)) - x);
+    const barHeight = Math.max(1, (total / maxDnsCount) * dnsPlotHeight);
+    const bar = svgElement("rect", {
+      x,
+      y: dnsBottom - barHeight,
+      width: Math.max(2, bucketWidth - 1),
+      height: barHeight,
+      class: "dns-bar",
+    });
+    addTooltipHandlers(bar, dnsBucketLines(bucket, group));
+    svg.append(bar);
+  });
+  svg.append(svgElement("line", { x1: left, x2: width - right, y1: dnsBottom, y2: dnsBottom, class: "axis" }));
+
   lanes.forEach((key, laneIndex) => {
     const config = configs[key];
     const yTop = laneTop + laneIndex * laneHeight;
@@ -727,7 +776,7 @@ function renderTimelineChart(svg, timeline, entry) {
     const x = xForOffset(group.offsetSeconds + bucketSeconds / 2);
     const dot = svgElement("rect", {
       x: x - Math.min(8, 3 + Math.sqrt(group.values.length)),
-      y: flowTop - 18,
+      y: dnsTop - 18,
       width: Math.min(16, 6 + Math.sqrt(group.values.length) * 2),
       height: Math.min(16, 6 + Math.sqrt(group.values.length) * 2),
       rx: 2,

@@ -468,6 +468,22 @@ a:hover {
   opacity: 1;
 }
 
+.dns-lane {
+  fill: #f2f0fa;
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.dns-bar {
+  fill: #6f5fb8;
+  cursor: help;
+  opacity: 0.74;
+}
+
+.dns-bar:hover {
+  opacity: 1;
+}
+
 .timeline-area {
   opacity: 0.16;
   pointer-events: none;
