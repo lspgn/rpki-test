@@ -43,7 +43,11 @@ DNS_FIELDS = (
     "dns.a",
     "dns.aaaa",
     "dns.cname",
+    "dns.flags.response",
+    "dns.qry.type",
 )
+
+LEGACY_DNS_FIELDS = DNS_FIELDS[:9]
 
 COMMANDS = (
     "sudo",
@@ -443,6 +447,9 @@ def read_dns_names_by_ip(path: Path) -> dict[str, set[str]]:
     if header == list(DNS_FIELDS):
         data_rows = rows[1:]
         field_names = list(DNS_FIELDS)
+    elif header == list(LEGACY_DNS_FIELDS):
+        data_rows = rows[1:]
+        field_names = list(LEGACY_DNS_FIELDS)
     else:
         data_rows = rows
         field_names = list(DNS_FIELDS)

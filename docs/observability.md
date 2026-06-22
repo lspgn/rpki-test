@@ -64,12 +64,14 @@ sudo tcpdump -i any -nn -s 0 -w "out/routinator-0_15_2/ebpf/dns.pcap" "((udp por
 tshark -r "out/routinator-0_15_2/ebpf/dns.pcap" -Y dns -T fields -E separator=/t \
   -e frame.time_epoch -e ip.src -e ip.dst -e udp.srcport -e udp.dstport \
   -e dns.qry.name -e dns.a -e dns.aaaa -e dns.cname \
+  -e dns.flags.response -e dns.qry.type \
   > "out/routinator-0_15_2/ebpf/dns-queries.tsv"
 ```
 
 Keep `dns.pcap` local for investigation only. The workflow uploads
-`dns-queries.tsv`, not the full packet capture. DNS answer fields are used
-to annotate packet-derived network flows with `candidateDnsNames`.
+`dns-queries.tsv`, not the full packet capture. DNS response flags and query
+types are used for timeline labels, while DNS answer fields are used to
+annotate packet-derived network flows with `candidateDnsNames`.
 
 Capture packet headers for protocol, host, port, byte, and rate accounting:
 

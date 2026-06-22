@@ -612,6 +612,32 @@ function logBucketLines(bucket, group, expanded = false) {
   ];
 }
 
+function dnsLines(group) {
+  const byQuery = groupedCounts(
+    group.values,
+    (item) =>
+      `${item.direction || "dns"} ${item.queryType || "unknown"} ${item.query || "unknown"} -> ${
+        (item.answers || []).slice(0, 3).join(", ") || "none"
+      }`,
+    "messages",
+  );
+  return [
+    `${formatOffset(group.offsetSeconds)}-${formatOffset(group.offsetSeconds + group.bucketSeconds)} DNS`,
+    `${formatCount(group.values.length)} messages`,
+    ...byQuery,
+  ];
+}
+
+function dnsBucketLines(bucket, group) {
+  if (group?.values?.length) {
+    return dnsLines(group);
+  }
+  return [
+    `${formatOffset(bucket.startOffsetSeconds)}-${formatOffset(bucket.endOffsetSeconds)} DNS`,
+    `${formatCount(bucket.dnsQueryCount || 0)} messages`,
+  ];
+}
+
 function bucketCountForKind(bucket, kind) {
   if (kind === "logs") {
     return (bucket.stdoutCount || 0) + (bucket.stderrCount || 0);
