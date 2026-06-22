@@ -8,8 +8,9 @@ entry and publishes these artifacts:
 - `ebpf/tooling.json` and `ebpf/tooling.log`: non-invasive preflight showing whether capture tools were available
 - `ebpf/capture-status.json` and `ebpf/capture.log`: capture process status and startup/cleanup log
 - `ebpf/dns-queries.tsv`: derived DNS query report, when collected
-- `ebpf/tcp-flows.json`: per-flow RX/TX bytes plus min/max rates over time, when collected
-- `ebpf/tcp-bps.log` and `ebpf/tcp-life.log`: source byte/connection reports, when collected
+- `ebpf/network-flows.json`: packet-derived per-flow RX/TX bytes plus min/max rates over time, when collected
+- `ebpf/tcp-flows.json`: BCC-derived per-flow RX/TX bytes plus min/max rates over time, when collected
+- `ebpf/tcp-bps.log` and `ebpf/tcp-life.log`: best-effort BPF byte/connection reports, when collected
 - `ebpf/syscalls.log` and `ebpf/memory-allocations.log`: syscall and allocation traces, when collected
 
 The dashboard surfaces peak processor cores and peak RAM for each validator.
@@ -45,6 +46,7 @@ In another terminal, find the running container and init PID:
 ```sh
 container="$(docker ps --format '{{.Names}}' | awk '/^rpki-routinator-0_15_2-/ {print; exit}')"
 pid="$(docker inspect -f '{{.State.Pid}}' "$container")"
+container_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container")"
 mkdir -p "out/routinator-0_15_2/ebpf"
 ```
 
@@ -59,6 +61,23 @@ tshark -r "out/routinator-0_15_2/ebpf/dns.pcap" -Y dns -T fields \
 
 Keep `dns.pcap` local for investigation only. The workflow uploads
 `dns-queries.tsv`, not the full packet capture.
+
+Capture packet headers for protocol, host, port, byte, and rate accounting:
+
+```sh
+sudo tcpdump -i any -nn -s 128 -w "out/routinator-0_15_2/ebpf/network.pcap" '(tcp or udp)'
+tshark -r "out/routinator-0_15_2/ebpf/network.pcap" -Y 'tcp or udp' -T fields -E header=y -E separator=/t \
+  -e frame.time_epoch -e frame.len -e ip.src -e ip.dst -e ipv6.src -e ipv6.dst \
+  -e tcp.srcport -e tcp.dstport -e udp.srcport -e udp.dstport -e _ws.col.Protocol -e dns.qry.name \
+  > "out/routinator-0_15_2/ebpf/network-packets.tsv"
+python3 scripts/summarize_network_packets.py \
+  --input "out/routinator-0_15_2/ebpf/network-packets.tsv" \
+  --output "out/routinator-0_15_2/ebpf/network-flows.json" \
+  --container-ip "$container_ip"
+```
+
+Keep `network.pcap` and `network-packets.tsv` local for investigation only.
+The workflow uploads `network-flows.json`, not the raw packet capture.
 
 Capture per-IP/port TCP throughput and lifetimes:
 

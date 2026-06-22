@@ -130,7 +130,9 @@ jobs:
             out/${{ matrix.id }}/ebpf/capture-status.json
             out/${{ matrix.id }}/ebpf/capture.log
             out/${{ matrix.id }}/ebpf/tcpdump.log
+            out/${{ matrix.id }}/ebpf/network-tcpdump.log
             out/${{ matrix.id }}/ebpf/dns-queries.tsv
+            out/${{ matrix.id }}/ebpf/network-flows.json
             out/${{ matrix.id }}/ebpf/tcp-bps.log
             out/${{ matrix.id }}/ebpf/tcp-flows.json
             out/${{ matrix.id }}/ebpf/tcp-life.log

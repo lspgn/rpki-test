@@ -101,8 +101,10 @@ def collect_tooling_status() -> dict[str, Any]:
         "/sys/kernel/debug/tracing": path_status("/sys/kernel/debug/tracing"),
         "/sys/kernel/tracing": path_status("/sys/kernel/tracing"),
     }
-    required_for_reports = ("tcpdump", "tshark", "tcptop-bpfcc", "tcplife-bpfcc")
-    missing = [command for command in required_for_reports if not commands[command]["available"]]
+    required_for_packet_reports = ("tcpdump", "tshark")
+    optional_bpf_reports = ("tcptop-bpfcc", "tcplife-bpfcc", "syscount-bpfcc", "memleak-bpfcc")
+    missing = [command for command in required_for_packet_reports if not commands[command]["available"]]
+    missing_bpf = [command for command in optional_bpf_reports if not commands[command]["available"]]
 
     return {
         "generatedAt": utc_now(),
@@ -114,7 +116,10 @@ def collect_tooling_status() -> dict[str, Any]:
         "commands": commands,
         "kernelPaths": paths,
         "canAttemptCapture": can_use_privilege and not missing,
+        "canAttemptPacketCapture": can_use_privilege and not missing,
+        "canAttemptBpfCapture": can_use_privilege and not missing_bpf,
         "missingRequiredCommands": missing,
+        "missingBpfCommands": missing_bpf,
         "note": "This is a non-invasive preflight; it does not start packet capture or eBPF tracing.",
     }
 
@@ -131,6 +136,8 @@ def write_log(path: Path, status: dict[str, Any]) -> None:
     ]
     if status["missingRequiredCommands"]:
         lines.append("missingRequiredCommands=" + ",".join(status["missingRequiredCommands"]))
+    if status["missingBpfCommands"]:
+        lines.append("missingBpfCommands=" + ",".join(status["missingBpfCommands"]))
     for command, item in status["commands"].items():
         value = item["path"] if item["available"] else "missing"
         if item.get("version"):

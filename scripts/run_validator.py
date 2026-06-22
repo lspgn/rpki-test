@@ -29,6 +29,8 @@ from rpki_project import (
     utc_now,
     write_json,
 )
+from summarize_network_packets import FIELDS as NETWORK_PACKET_FIELDS
+from summarize_network_packets import summarize_packets, read_packets
 from summarize_tcp_bps import parse_tcptop
 
 
@@ -262,6 +264,7 @@ class ObservabilityCapture:
         self.processes: list[tuple[str, subprocess.Popen[Any], Any]] = []
         self.errors: list[str] = []
         self.container_pid: int | None = None
+        self.container_ips: list[str] = []
         self.started = False
 
     def log(self, message: str) -> None:
@@ -288,6 +291,41 @@ class ObservabilityCapture:
         except ValueError:
             return None
         return pid if pid > 0 else None
+
+    def inspect_container_ips(self) -> list[str]:
+        try:
+            completed = subprocess.run(
+                ["docker", "inspect", self.container_name],
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.log(f"docker inspect networks failed: {exc}")
+            return []
+        if completed.returncode != 0:
+            self.log(f"docker inspect networks failed: {completed.stderr.strip()}")
+            return []
+        try:
+            data = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            self.log(f"docker inspect networks JSON failed: {exc}")
+            return []
+
+        ips = []
+        for container in data:
+            networks = container.get("NetworkSettings", {}).get("Networks", {})
+            if not isinstance(networks, dict):
+                continue
+            for network in networks.values():
+                if not isinstance(network, dict):
+                    continue
+                for key in ("IPAddress", "GlobalIPv6Address"):
+                    value = str(network.get(key) or "").strip()
+                    if value:
+                        ips.append(value)
+        return sorted(set(ips))
 
     def wait_for_container_pid(self, timeout_seconds: float = 120.0) -> int | None:
         deadline = time.monotonic() + timeout_seconds
@@ -327,6 +365,13 @@ class ObservabilityCapture:
         if tooling is not None and not tooling.get("canAttemptCapture", False):
             self.log("capture skipped because tooling preflight reported canAttemptCapture=False")
             return
+        commands = tooling.get("commands", {}) if isinstance(tooling, dict) else {}
+
+        def tool_available(name: str) -> bool:
+            if not commands:
+                return True
+            item = commands.get(name, {})
+            return bool(item.get("available"))
 
         pid = self.wait_for_container_pid()
         if pid is None:
@@ -334,18 +379,37 @@ class ObservabilityCapture:
             self.log("capture skipped because container PID was not available")
             return
         self.container_pid = pid
+        self.container_ips = self.inspect_container_ips()
         self.started = True
         self.log(f"container pid={pid}")
+        self.log(f"container ips={','.join(self.container_ips) if self.container_ips else 'unknown'}")
 
         self.start_process(
             "dns-pcap",
             sudo_command(["tcpdump", "-i", "any", "-nn", "-s", "0", "-w", str(self.ebpf_dir / "dns.pcap"), "udp", "port", "53", "or", "tcp", "port", "53"]),
             self.ebpf_dir / "tcpdump.log",
         )
-        self.start_process("tcp-bps", sudo_command(["tcptop-bpfcc", "-p", str(pid), "-C", "1"]), self.ebpf_dir / "tcp-bps.log")
-        self.start_process("tcp-life", sudo_command(["tcplife-bpfcc", "-p", str(pid), "-T"]), self.ebpf_dir / "tcp-life.log")
-        self.start_process("syscalls", sudo_command(["syscount-bpfcc", "-p", str(pid), "-i", "10"]), self.ebpf_dir / "syscalls.log")
-        self.start_process("memory-allocations", sudo_command(["memleak-bpfcc", "-p", str(pid), "-a", "-o", "10"]), self.ebpf_dir / "memory-allocations.log")
+        self.start_process(
+            "network-pcap",
+            sudo_command(["tcpdump", "-i", "any", "-nn", "-s", "128", "-w", str(self.ebpf_dir / "network.pcap"), "tcp", "or", "udp"]),
+            self.ebpf_dir / "network-tcpdump.log",
+        )
+        if tool_available("tcptop-bpfcc"):
+            self.start_process("tcp-bps", sudo_command(["tcptop-bpfcc", "-p", str(pid), "-C", "1"]), self.ebpf_dir / "tcp-bps.log")
+        else:
+            self.log("tcp-bps skipped because tcptop-bpfcc is unavailable")
+        if tool_available("tcplife-bpfcc"):
+            self.start_process("tcp-life", sudo_command(["tcplife-bpfcc", "-p", str(pid), "-T"]), self.ebpf_dir / "tcp-life.log")
+        else:
+            self.log("tcp-life skipped because tcplife-bpfcc is unavailable")
+        if tool_available("syscount-bpfcc"):
+            self.start_process("syscalls", sudo_command(["syscount-bpfcc", "-p", str(pid), "-i", "10"]), self.ebpf_dir / "syscalls.log")
+        else:
+            self.log("syscalls skipped because syscount-bpfcc is unavailable")
+        if tool_available("memleak-bpfcc"):
+            self.start_process("memory-allocations", sudo_command(["memleak-bpfcc", "-p", str(pid), "-a", "-o", "10"]), self.ebpf_dir / "memory-allocations.log")
+        else:
+            self.log("memory-allocations skipped because memleak-bpfcc is unavailable")
 
     def stop_processes(self) -> None:
         for name, process, handle in self.processes:
@@ -423,14 +487,72 @@ class ObservabilityCapture:
             self.errors.append(f"tcp flow summary: {exc}")
             self.log(f"tcp flow summary failed: {exc}")
 
+    def derive_network_packet_report(self) -> Path | None:
+        pcap = self.ebpf_dir / "network.pcap"
+        output = self.ebpf_dir / "network-packets.tsv"
+        if not pcap.exists() or pcap.stat().st_size == 0:
+            self.log("network packet report skipped because network.pcap is missing or empty")
+            return None
+        command = [
+            "tshark",
+            "-r",
+            str(pcap),
+            "-Y",
+            "tcp or udp",
+            "-T",
+            "fields",
+            "-E",
+            "header=y",
+            "-E",
+            "separator=/t",
+        ]
+        for field in NETWORK_PACKET_FIELDS:
+            command.extend(["-e", field])
+        try:
+            with output.open("w", encoding="utf-8") as handle:
+                completed = subprocess.run(command, text=True, stdout=handle, stderr=subprocess.PIPE, timeout=180, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.errors.append(f"network tshark: {exc}")
+            self.log(f"network tshark failed: {exc}")
+            return None
+        if completed.returncode != 0:
+            self.errors.append(f"network tshark: {completed.stderr.strip()}")
+            self.log(f"network tshark failed: {completed.stderr.strip()}")
+            return None
+        self.log(f"wrote {output.name}")
+        return output
+
+    def derive_network_flow_report(self) -> None:
+        source = self.derive_network_packet_report()
+        output = self.ebpf_dir / "network-flows.json"
+        if source is None or not source.exists() or source.stat().st_size == 0:
+            self.log("network flow report skipped because packet TSV is missing or empty")
+            return
+        try:
+            summary = summarize_packets(read_packets(source), self.container_ips, bucket_seconds=1.0)
+            summary["generatedAt"] = utc_now()
+            summary["source"] = source.name
+            write_json(output, summary)
+            self.log(f"wrote {output.name}")
+            try:
+                source.unlink()
+                self.log(f"removed {source.name}")
+            except OSError as exc:
+                self.log(f"failed to remove {source.name}: {exc}")
+        except Exception as exc:  # noqa: BLE001 - keep validation status independent of report parsing.
+            self.errors.append(f"network flow summary: {exc}")
+            self.log(f"network flow summary failed: {exc}")
+
     def stop(self) -> dict[str, Any]:
         self.stop_processes()
         self.derive_dns_report()
         self.derive_tcp_flow_report()
+        self.derive_network_flow_report()
         summary = {
             "enabled": self.enabled,
             "started": self.started,
             "containerPid": self.container_pid,
+            "containerIps": self.container_ips,
             "processes": [{"name": name, "exitCode": process.returncode} for name, process, _handle in self.processes],
             "errors": self.errors,
             "generatedAt": utc_now(),

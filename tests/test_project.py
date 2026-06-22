@@ -16,6 +16,7 @@ from aggregate_results import main as aggregate_main  # noqa: E402
 from check_observability_tools import collect_tooling_status  # noqa: E402
 from rpki_project import load_config, normalize_payloads, payload_counts, read_json, validators, write_json  # noqa: E402
 from run_validator import archive_work_dir, parse_bytes, summarize_docker_stats  # noqa: E402
+from summarize_network_packets import read_packets, summarize_packets  # noqa: E402
 from summarize_tcp_bps import parse_tcptop  # noqa: E402
 
 
@@ -129,6 +130,56 @@ PID    COMM         LADDR                 RADDR                  RX_KB TX_KB
         self.assertEqual(flow["samples"][0]["time"], "12:00:00")
 
 
+class NetworkFlowSummaryTests(unittest.TestCase):
+    def test_packet_fields_summarize_container_flows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "packets.tsv"
+            source.write_text(
+                "\t".join(
+                    (
+                        "frame.time_epoch",
+                        "frame.len",
+                        "ip.src",
+                        "ip.dst",
+                        "ipv6.src",
+                        "ipv6.dst",
+                        "tcp.srcport",
+                        "tcp.dstport",
+                        "udp.srcport",
+                        "udp.dstport",
+                        "_ws.col.Protocol",
+                        "dns.qry.name",
+                    )
+                )
+                + "\n"
+                + "100.0\t60\t172.17.0.2\t192.0.2.53\t\t\t\t\t50000\t53\tDNS\texample.net\n"
+                + "100.5\t120\t192.0.2.53\t172.17.0.2\t\t\t\t\t53\t50000\tDNS\texample.net\n"
+                + "101.2\t1000\t203.0.113.10\t172.17.0.2\t\t\t443\t40000\t\t\tTCP\t\n"
+                + "101.4\t500\t172.17.0.2\t203.0.113.10\t\t\t40000\t443\t\t\tTCP\t\n"
+                + "101.4\t500\t172.17.0.2\t203.0.113.10\t\t\t40000\t443\t\t\tTCP\t\n"
+                + "101.8\t900\t10.1.0.1\t198.51.100.1\t\t\t12345\t443\t\t\tTCP\t\n",
+                encoding="utf-8",
+            )
+
+            summary = summarize_packets(read_packets(source), ["172.17.0.2"], bucket_seconds=1.0)
+
+        self.assertEqual(summary["packetCount"], 6)
+        self.assertEqual(summary["matchedPacketCount"], 4)
+        self.assertEqual(summary["ignoredPacketCount"], 1)
+        self.assertEqual(summary["flowCount"], 2)
+        self.assertEqual(summary["totalRxBytes"], 1120)
+        self.assertEqual(summary["totalTxBytes"], 560)
+        self.assertEqual(summary["maxRxBps"], 1000)
+        self.assertEqual(summary["maxTxBps"], 500)
+        tcp_flow = next(flow for flow in summary["flows"] if flow["protocol"] == "TCP")
+        self.assertEqual(tcp_flow["remoteAddress"], "203.0.113.10")
+        self.assertEqual(tcp_flow["remotePort"], 443)
+        self.assertEqual(tcp_flow["totalRxBytes"], 1000)
+        self.assertEqual(tcp_flow["totalTxBytes"], 500)
+        dns_flow = next(flow for flow in summary["flows"] if flow["protocol"] == "UDP")
+        self.assertEqual(dns_flow["dnsNames"], ["example.net"])
+
+
 class ObservabilityToolingTests(unittest.TestCase):
     def test_collect_tooling_status_reports_required_commands(self) -> None:
         status = collect_tooling_status()
@@ -190,7 +241,9 @@ class AggregateTests(unittest.TestCase):
                 write_json(ebpf_dir / "capture-status.json", {"started": True})
                 (ebpf_dir / "capture.log").write_text("capture finished\n", encoding="utf-8")
                 (ebpf_dir / "tcpdump.log").write_text("1 packet captured\n", encoding="utf-8")
+                (ebpf_dir / "network-tcpdump.log").write_text("2 packets captured\n", encoding="utf-8")
                 (ebpf_dir / "dns-queries.tsv").write_text("time\tsrc\tdst\tquery\n", encoding="utf-8")
+                write_json(ebpf_dir / "network-flows.json", {"flowCount": 1, "flows": []})
                 (ebpf_dir / "tcp-bps.log").write_text("127.0.0.1:443 1024\n", encoding="utf-8")
                 write_json(ebpf_dir / "tcp-flows.json", {"flowCount": 1, "flows": []})
                 (ebpf_dir / "syscalls.log").write_text("syscall count\n", encoding="utf-8")
@@ -231,12 +284,15 @@ class AggregateTests(unittest.TestCase):
             self.assertTrue(any(path.endswith("ebpf/capture-status.json") for path in observability))
             self.assertTrue(any(path.endswith("ebpf/capture.log") for path in observability))
             self.assertTrue(any(path.endswith("ebpf/tcpdump.log") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/network-tcpdump.log") for path in observability))
             self.assertTrue(any(path.endswith("ebpf/dns-queries.tsv") for path in observability))
+            self.assertTrue(any(path.endswith("ebpf/network-flows.json") for path in observability))
             self.assertTrue(any(path.endswith("ebpf/tcp-bps.log") for path in observability))
             self.assertTrue(any(path.endswith("ebpf/tcp-flows.json") for path in observability))
             self.assertTrue(any(path.endswith("ebpf/syscalls.log") for path in observability))
             self.assertTrue(any(path.endswith("ebpf/memory-allocations.log") for path in observability))
             self.assertFalse(any(path.endswith("dns.pcap") for path in observability))
+            self.assertFalse(any(path.endswith("network.pcap") for path in observability))
             self.assertTrue((public / "index.html").exists())
 
 
