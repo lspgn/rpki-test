@@ -1,6 +1,7 @@
 {
   "defaults": {
     "timeout_seconds": 7200,
+    "threads": 4,
     "payloads": {
       "routeOrigins": true,
       "routerKeys": true,
@@ -20,7 +21,7 @@
         "routerKeys": true,
         "aspas": true
       },
-      "script": "mkdir -p /work/cache /out/raw\nroutinator --repository-dir /work/cache/repository --enable-bgpsec --enable-aspa --validation-threads=4 -vv --log-repository-issues --logfile /out/routinator.log vrps --complete -f jsonext -o /out/raw/routinator.json"
+      "script": "mkdir -p /work/cache /out/raw\nroutinator --repository-dir /work/cache/repository --enable-bgpsec --enable-aspa --validation-threads=\"$RPKI_VALIDATOR_THREADS\" -vv --log-repository-issues --logfile /out/routinator.log vrps -f jsonext -o /out/raw/routinator.json"
     },
     {
       "id": "rpki-client-9_8",
@@ -34,7 +35,7 @@
         "routerKeys": true,
         "aspas": true
       },
-      "script": "apk add --no-cache build-base ca-certificates curl expat-dev libretls-dev musl-fts-dev openssl-dev pkgconf rsync zlib-dev\naddgroup -S _rpki-client\nadduser -S -D -H -h /nonexistent -s /sbin/nologin -G _rpki-client _rpki-client\ncurl -fsSL https://ftp.openbsd.org/pub/OpenBSD/rpki-client/rpki-client-9.8.tar.gz -o /tmp/rpki-client-9.8.tar.gz\ntar -xzf /tmp/rpki-client-9.8.tar.gz -C /tmp\ncd /tmp/rpki-client-9.8\ntest \"$(cat VERSION)\" = \"9.8\"\n./configure --prefix=/usr/local --with-rsync=rsync --with-user=_rpki-client --with-tal-dir=/usr/local/etc/rpki --with-base-dir=/work/cache --with-output-dir=/work/db\nmake -j\"$(nproc)\"\nmake install\nrpki-client -V 2>&1 | grep 'rpki-client-portable 9.8'\nmkdir -p /work/cache /work/db /out/raw\nchmod -R a+rwX /work/cache /work/db /out/raw\nrpki-client -j -d /work/cache -s 3600 /work/db\ncp /work/db/json /out/raw/rpki-client.json"
+      "script": "apk add --no-cache build-base ca-certificates curl expat-dev libretls-dev musl-fts-dev openssl-dev pkgconf rsync zlib-dev\naddgroup -S _rpki-client\nadduser -S -D -H -h /nonexistent -s /sbin/nologin -G _rpki-client _rpki-client\ncurl -fsSL https://ftp.openbsd.org/pub/OpenBSD/rpki-client/rpki-client-9.8.tar.gz -o /tmp/rpki-client-9.8.tar.gz\ntar -xzf /tmp/rpki-client-9.8.tar.gz -C /tmp\ncd /tmp/rpki-client-9.8\ntest \"$(cat VERSION)\" = \"9.8\"\n./configure --prefix=/usr/local --with-rsync=rsync --with-user=_rpki-client --with-tal-dir=/usr/local/etc/rpki --with-base-dir=/work/cache --with-output-dir=/work/db\nmake -j\"$(nproc)\"\nmake install\nrpki-client -V 2>&1 | grep 'rpki-client-portable 9.8'\nmkdir -p /work/cache /work/db /out/raw\nchmod -R a+rwX /work/cache /work/db /out/raw\nrpki-client -j -p \"$RPKI_VALIDATOR_THREADS\" -d /work/cache -s 3600 /work/db\ncp /work/db/json /out/raw/rpki-client.json"
     },
     {
       "id": "fort-1_6_8",

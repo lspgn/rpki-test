@@ -53,7 +53,7 @@ mkdir -p "out/routinator-0_15_2/ebpf"
 Capture DNS queries and responses:
 
 ```sh
-sudo tcpdump -i any -nn -s 0 -w "out/routinator-0_15_2/ebpf/dns.pcap" '(udp port 53 or tcp port 53)'
+sudo tcpdump -i any -nn -s 0 -w "out/routinator-0_15_2/ebpf/dns.pcap" "((udp port 53 or tcp port 53) and host $container_ip)"
 tshark -r "out/routinator-0_15_2/ebpf/dns.pcap" -Y dns -T fields -E separator=/t \
   -e frame.time_epoch -e ip.src -e ip.dst -e udp.srcport -e udp.dstport \
   -e dns.qry.name -e dns.a -e dns.aaaa -e dns.cname \
@@ -67,7 +67,7 @@ to annotate packet-derived network flows with `candidateDnsNames`.
 Capture packet headers for protocol, host, port, byte, and rate accounting:
 
 ```sh
-sudo tcpdump -i any -nn -s 128 -w "out/routinator-0_15_2/ebpf/network.pcap" '(tcp or udp)'
+sudo tcpdump -i any -nn -s 128 -w "out/routinator-0_15_2/ebpf/network.pcap" "((tcp or udp) and host $container_ip)"
 tshark -r "out/routinator-0_15_2/ebpf/network.pcap" -Y 'tcp or udp' -T fields -E header=y -E separator=/t \
   -e frame.time_epoch -e frame.len -e ip.src -e ip.dst -e ipv6.src -e ipv6.dst \
   -e tcp.srcport -e tcp.dstport -e udp.srcport -e udp.dstport -e _ws.col.Protocol -e dns.qry.name \

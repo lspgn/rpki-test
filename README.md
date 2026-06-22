@@ -13,6 +13,7 @@ Each entry declares:
 - `id`: stable artifact and dashboard identifier
 - `validator`, `version`, `label`: display and grouping metadata
 - `image`: container image pinned by digest
+- `threads`: validator worker thread count exposed as `RPKI_VALIDATOR_THREADS`
 - `payloads`: supported payload classes
 - `script`: command run inside the container with `/out` mounted as the result directory
 

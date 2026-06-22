@@ -57,6 +57,8 @@ def docker_command(entry: dict[str, Any], output_dir: Path, work_dir: Path, cont
     ]
     if container_name:
         command.extend(["--name", container_name])
+    if entry.get("threads") is not None:
+        command.extend(["-e", f"RPKI_VALIDATOR_THREADS={entry['threads']}"])
     command.extend(
         [
             "--entrypoint",
@@ -255,6 +257,17 @@ def read_tooling_status(output_dir: Path) -> dict[str, Any] | None:
         return None
 
 
+def tcpdump_container_filter(base_expression: list[str], container_ips: list[str]) -> list[str] | None:
+    host_terms: list[str] = []
+    for ip in sorted({item.strip() for item in container_ips if item.strip()}):
+        if host_terms:
+            host_terms.append("or")
+        host_terms.extend(["host", ip])
+    if not host_terms:
+        return None
+    return ["(", *base_expression, ")", "and", "(", *host_terms, ")"]
+
+
 class ObservabilityCapture:
     def __init__(self, container_name: str, output_dir: Path, enabled: bool) -> None:
         self.container_name = container_name
@@ -385,16 +398,24 @@ class ObservabilityCapture:
         self.log(f"container pid={pid}")
         self.log(f"container ips={','.join(self.container_ips) if self.container_ips else 'unknown'}")
 
-        self.start_process(
-            "dns-pcap",
-            sudo_command(["tcpdump", "-i", "any", "-nn", "-s", "0", "-w", str(self.ebpf_dir / "dns.pcap"), "udp", "port", "53", "or", "tcp", "port", "53"]),
-            self.ebpf_dir / "tcpdump.log",
-        )
-        self.start_process(
-            "network-pcap",
-            sudo_command(["tcpdump", "-i", "any", "-nn", "-s", "128", "-w", str(self.ebpf_dir / "network.pcap"), "tcp", "or", "udp"]),
-            self.ebpf_dir / "network-tcpdump.log",
-        )
+        dns_filter = tcpdump_container_filter(["udp", "port", "53", "or", "tcp", "port", "53"], self.container_ips)
+        network_filter = tcpdump_container_filter(["tcp", "or", "udp"], self.container_ips)
+        if not tool_available("tcpdump"):
+            self.log("packet capture skipped because tcpdump is unavailable")
+        elif dns_filter is None or network_filter is None:
+            self.errors.append("container IP was not available for packet capture")
+            self.log("packet capture skipped because container IP was not available")
+        else:
+            self.start_process(
+                "dns-pcap",
+                sudo_command(["tcpdump", "-i", "any", "-nn", "-s", "0", "-w", str(self.ebpf_dir / "dns.pcap"), *dns_filter]),
+                self.ebpf_dir / "tcpdump.log",
+            )
+            self.start_process(
+                "network-pcap",
+                sudo_command(["tcpdump", "-i", "any", "-nn", "-s", "128", "-w", str(self.ebpf_dir / "network.pcap"), *network_filter]),
+                self.ebpf_dir / "network-tcpdump.log",
+            )
         if tool_available("tcptop-bpfcc"):
             self.start_process("tcp-bps", sudo_command(["tcptop-bpfcc", "-p", str(pid), "-C", "1"]), self.ebpf_dir / "tcp-bps.log")
         else:
@@ -642,6 +663,18 @@ def read_raw_json(raw_dir: Path) -> list[Any]:
     return values
 
 
+def normalize_raw_output(raw_dir: Path, output_dir: Path, entry: dict[str, Any], required: bool) -> str | None:
+    if not required and not any(raw_dir.glob("*.json")):
+        return None
+    try:
+        raw_values = read_raw_json(raw_dir)
+    except Exception as exc:  # noqa: BLE001 - record parse failures for the dashboard.
+        return str(exc)
+    normalized = normalize_payloads(raw_values, entry)
+    write_json(output_dir / "normalized.json", normalized)
+    return None
+
+
 def prepare_output_dir(output_dir: Path) -> None:
     # Validator images may run as non-root users, so the bind-mounted /out tree
     # needs to be writable by more than the GitHub runner uid.
@@ -749,18 +782,9 @@ def main() -> None:
     (output_dir / "stdout.log").write_text(stdout, encoding="utf-8")
     (output_dir / "stderr.log").write_text(stderr, encoding="utf-8")
 
-    raw_values = []
-    normalization_error = None
-    if returncode == 0:
-        try:
-            raw_values = read_raw_json(raw_dir)
-        except Exception as exc:  # noqa: BLE001 - record parse failures for the dashboard.
-            normalization_error = str(exc)
-            returncode = 65
-
-    if returncode == 0:
-        normalized = normalize_payloads(raw_values, entry)
-        write_json(output_dir / "normalized.json", normalized)
+    normalization_error = normalize_raw_output(raw_dir, output_dir, entry, required=returncode == 0)
+    if normalization_error is not None and returncode == 0:
+        returncode = 65
 
     raw_files = compress_raw_files(raw_dir)
 

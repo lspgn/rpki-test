@@ -36,6 +36,8 @@ def validators(config: dict[str, Any]) -> list[dict[str, Any]]:
     for item in config.get("validators", []):
         merged = dict(item)
         merged.setdefault("timeout_seconds", defaults.get("timeout_seconds", 7200))
+        if "threads" in defaults:
+            merged.setdefault("threads", defaults["threads"])
         payloads = dict(defaults.get("payloads", {}))
         payloads.update(item.get("payloads", {}))
         merged["payloads"] = payloads

@@ -16,7 +16,16 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from aggregate_results import cache_tree_from_archive, main as aggregate_main  # noqa: E402
 from check_observability_tools import collect_tooling_status  # noqa: E402
 from rpki_project import load_config, normalize_payloads, payload_counts, read_json, validators, write_json  # noqa: E402
-from run_validator import compress_raw_files, parse_bytes, summarize_docker_stats, write_cache_tree  # noqa: E402
+from run_validator import (  # noqa: E402
+    ObservabilityCapture,
+    compress_raw_files,
+    docker_command,
+    normalize_raw_output,
+    parse_bytes,
+    summarize_docker_stats,
+    tcpdump_container_filter,
+    write_cache_tree,
+)
 from summarize_network_packets import DNS_FIELDS, FIELDS as NETWORK_PACKET_FIELDS  # noqa: E402
 from summarize_network_packets import read_dns_names_by_ip, read_packets, summarize_packets  # noqa: E402
 from summarize_tcp_bps import parse_tcptop  # noqa: E402
@@ -69,11 +78,55 @@ class ConfigTests(unittest.TestCase):
         for entry in entries:
             self.assertIn("@sha256:", entry["image"])
             self.assertIn("payloads", entry)
+            self.assertEqual(entry["threads"], 4)
+            command = docker_command(entry, Path("/tmp/out"), Path("/tmp/work"), "test-container")
+            self.assertIn("-e", command)
+            self.assertIn("RPKI_VALIDATOR_THREADS=4", command)
+        routinator = next(entry for entry in entries if entry["validator"] == "routinator")
+        self.assertIn('--validation-threads="$RPKI_VALIDATOR_THREADS"', routinator["script"])
+        self.assertNotIn("--complete", routinator["script"])
         rpki_client = next(entry for entry in entries if entry["validator"] == "rpki-client")
         self.assertEqual(rpki_client["id"], "rpki-client-9_8")
         self.assertEqual(rpki_client["version"], "9.8")
         self.assertIn("rpki-client-9.8.tar.gz", rpki_client["script"])
         self.assertIn("rpki-client-portable 9.8", rpki_client["script"])
+        self.assertIn('rpki-client -j -p "$RPKI_VALIDATOR_THREADS"', rpki_client["script"])
+
+    def test_normalizes_raw_output_for_failed_validator_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            raw_dir = output / "raw"
+            raw_dir.mkdir()
+            shutil.copy2(ROOT / "tests/fixtures/routinator/raw.json", raw_dir / "routinator.json")
+            entry = {
+                "id": "routinator-test",
+                "validator": "routinator",
+                "version": "test",
+                "payloads": {"routeOrigins": True, "routerKeys": True, "aspas": True},
+            }
+
+            error = normalize_raw_output(raw_dir, output, entry, required=False)
+            normalized = read_json(output / "normalized.json")
+
+        self.assertIsNone(error)
+        self.assertEqual(payload_counts(normalized), {"routeOrigins": 1, "routerKeys": 1, "aspas": 1})
+
+    def test_skips_optional_normalization_when_failed_run_has_no_raw_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            raw_dir = output / "raw"
+            raw_dir.mkdir()
+            entry = {
+                "id": "routinator-test",
+                "validator": "routinator",
+                "version": "test",
+                "payloads": {"routeOrigins": True, "routerKeys": True, "aspas": True},
+            }
+
+            error = normalize_raw_output(raw_dir, output, entry, required=False)
+
+        self.assertIsNone(error)
+        self.assertFalse((output / "normalized.json").exists())
 
 
 class ResourceUsageTests(unittest.TestCase):
@@ -201,6 +254,90 @@ class ObservabilityToolingTests(unittest.TestCase):
         for command in ("tcpdump", "tshark", "tcptop-bpfcc", "tcplife-bpfcc"):
             self.assertIn(command, status["commands"])
             self.assertIn("available", status["commands"][command])
+
+    def test_tcpdump_filter_limits_capture_to_container_ips(self) -> None:
+        expression = tcpdump_container_filter(["udp", "port", "53"], ["172.17.0.2", "2001:db8::10", "172.17.0.2"])
+
+        self.assertEqual(
+            expression,
+            [
+                "(",
+                "udp",
+                "port",
+                "53",
+                ")",
+                "and",
+                "(",
+                "host",
+                "172.17.0.2",
+                "or",
+                "host",
+                "2001:db8::10",
+                ")",
+            ],
+        )
+        self.assertIsNone(tcpdump_container_filter(["udp", "port", "53"], []))
+
+    def test_observability_capture_skips_packet_capture_without_container_ip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            ebpf_dir = output / "ebpf"
+            tooling = {
+                "canAttemptCapture": True,
+                "commands": {
+                    "tcpdump": {"available": True},
+                    "tcptop-bpfcc": {"available": False},
+                    "tcplife-bpfcc": {"available": False},
+                    "syscount-bpfcc": {"available": False},
+                    "memleak-bpfcc": {"available": False},
+                },
+            }
+            write_json(ebpf_dir / "tooling.json", tooling)
+            capture = ObservabilityCapture("validator", output, True)
+            capture.wait_for_container_pid = lambda: 1234  # type: ignore[method-assign]
+            capture.inspect_container_ips = lambda: []  # type: ignore[method-assign]
+            started: list[str] = []
+            capture.start_process = lambda name, command, log: started.append(name)  # type: ignore[method-assign]
+
+            capture.start()
+
+        self.assertNotIn("dns-pcap", started)
+        self.assertNotIn("network-pcap", started)
+        self.assertIn("container IP was not available for packet capture", capture.errors)
+
+    def test_observability_capture_scopes_packet_capture_to_container_ip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            ebpf_dir = output / "ebpf"
+            tooling = {
+                "canAttemptCapture": True,
+                "commands": {
+                    "tcpdump": {"available": True},
+                    "tcptop-bpfcc": {"available": False},
+                    "tcplife-bpfcc": {"available": False},
+                    "syscount-bpfcc": {"available": False},
+                    "memleak-bpfcc": {"available": False},
+                },
+            }
+            write_json(ebpf_dir / "tooling.json", tooling)
+            capture = ObservabilityCapture("validator", output, True)
+            capture.wait_for_container_pid = lambda: 1234  # type: ignore[method-assign]
+            capture.inspect_container_ips = lambda: ["172.17.0.2"]  # type: ignore[method-assign]
+            started: dict[str, list[str]] = {}
+            capture.start_process = lambda name, command, log: started.setdefault(name, command)  # type: ignore[method-assign]
+
+            capture.start()
+
+        dns_command = started["dns-pcap"]
+        network_command = started["network-pcap"]
+        self.assertEqual(
+            dns_command[dns_command.index("-w") + 2 :],
+            ["(", "udp", "port", "53", "or", "tcp", "port", "53", ")", "and", "(", "host", "172.17.0.2", ")"],
+        )
+        self.assertEqual(
+            network_command[network_command.index("-w") + 2 :],
+            ["(", "tcp", "or", "udp", ")", "and", "(", "host", "172.17.0.2", ")"],
+        )
 
 
 class AggregateTests(unittest.TestCase):
