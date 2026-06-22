@@ -14,7 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from aggregate_results import build_timeline, cache_tree_from_archive, main as aggregate_main, source_files  # noqa: E402
-from check_observability_tools import collect_tooling_status  # noqa: E402
+from observability import DNS_FIELDS, FIELDS as NETWORK_PACKET_FIELDS  # noqa: E402
+from observability import collect_tooling_status, parse_tcptop, read_dns_names_by_ip, read_packets, summarize_packets  # noqa: E402
 from rpki_project import load_config, normalize_payloads, payload_counts, read_json, validators, write_json  # noqa: E402
 from run_validator import (  # noqa: E402
     ObservabilityCapture,
@@ -27,9 +28,6 @@ from run_validator import (  # noqa: E402
     validator_config,
     write_cache_tree,
 )
-from summarize_network_packets import DNS_FIELDS, FIELDS as NETWORK_PACKET_FIELDS  # noqa: E402
-from summarize_network_packets import read_dns_names_by_ip, read_packets, summarize_packets  # noqa: E402
-from summarize_tcp_bps import parse_tcptop  # noqa: E402
 
 
 class NormalizationTests(unittest.TestCase):

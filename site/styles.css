@@ -534,6 +534,28 @@ a:hover {
   pointer-events: none;
 }
 
+.timeline-crosshair-capture {
+  fill: transparent;
+  pointer-events: all;
+}
+
+.timeline-crosshair {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.timeline-crosshair.is-visible {
+  opacity: 1;
+}
+
+.timeline-crosshair-line {
+  stroke: var(--ink);
+  stroke-dasharray: 4 4;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  opacity: 0.58;
+}
+
 .bucket-hover {
   fill: transparent;
   pointer-events: all;

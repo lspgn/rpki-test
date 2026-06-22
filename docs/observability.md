@@ -81,7 +81,7 @@ tshark -r "out/routinator-0_15_2/ebpf/network.pcap" -Y 'tcp or udp' -T fields -E
   -e frame.time_epoch -e frame.len -e ip.src -e ip.dst -e ipv6.src -e ipv6.dst \
   -e tcp.srcport -e tcp.dstport -e udp.srcport -e udp.dstport -e _ws.col.Protocol -e dns.qry.name \
   > "out/routinator-0_15_2/ebpf/network-packets.tsv"
-python3 scripts/summarize_network_packets.py \
+python3 scripts/observability.py summarize-packets \
   --input "out/routinator-0_15_2/ebpf/network-packets.tsv" \
   --output "out/routinator-0_15_2/ebpf/network-flows.json" \
   --container-ip "$container_ip" \
@@ -95,7 +95,7 @@ Capture per-IP/port TCP throughput and lifetimes:
 
 ```sh
 sudo tcptop-bpfcc -p "$pid" -C 1 > "out/routinator-0_15_2/ebpf/tcp-bps.log"
-python3 scripts/summarize_tcp_bps.py \
+python3 scripts/observability.py summarize-tcptop \
   --input "out/routinator-0_15_2/ebpf/tcp-bps.log" \
   --output "out/routinator-0_15_2/ebpf/tcp-flows.json"
 sudo tcplife-bpfcc -p "$pid" > "out/routinator-0_15_2/ebpf/tcp-life.log"
